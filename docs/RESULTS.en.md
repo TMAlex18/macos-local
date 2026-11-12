@@ -268,6 +268,11 @@ Earlier attempts exposed three problems that appear only in a fresh checkout, al
 
 Limits: the same host, system packages and Rust toolchain were used, so a rebuild on a second, blank machine is still untested; the binaries are not bit-for-bit reproducible, because the build writes the checkout path into them. Raw logs: `runs/maintenance-20261112/v1-fresh-clone/`.
 
+### 7.3 2026-11-12 Comparison with Upstream
+
+- **Reims and metal2vulkan:** upstream development happens on the `development` branch (`c410a064b` and `43d230817` on 2026-11-11), 2,067 and 3,172 commits ahead of `master`. None of our 8 patches is needed any more: reims 0001 only pins the local build; the 16 KiB guest-page handling of 0002–0005 has been rewritten upstream in `crates/reims-vgpu-vulkan/src/core/memory/map.rs`; upstream's Linux `allocate_aliasable` does what 0006's shareable temporary backing did; and the source-over blending of metal2vulkan 0001 and reims 0007 is covered by upstream's in-shader blending, which computes any blend as Metal does. This conclusion comes from reading the code and documentation; this project's guest has not been run on the new upstream versions.
+- **QEMU master (11.1.90):** 0013 has been fixed upstream. The vmapple capability list linked in descending order (0014, 0019), virtio-snd answering zero-count JACK_INFO/CHMAP_INFO with `NOT_SUPP` (0027) and its four queues fixed at 64 entries (0028), and the virtio-net control queue fixed at 64 entries (0032) are still present.
+
 ## 8. Remaining Open Work
 
 - **System:** Safari first-page load and sustained responsiveness under the unmodified 3-second deadline; native-window update stalls; diagnostic `site1` coverage and broader WebGL/Metal workloads; wider network protocol and application testing; decomposing by callsite and reducing the 14%–30% vCPU wait time on QEMU's global lock and exclusive sections under guest load (PAC algorithm, RAM size, and background saturation have already been isolated individually against Safari GPU init); proving clean APFS filesystem unmount on shutdown; long-haul stability.

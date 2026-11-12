@@ -23,7 +23,7 @@ The actual report window is **03:51:32.920–03:51:43.226 UTC on November 7,
 reprocessing 256 seconds. Those operation totals are not sampling duration
 or normal application performance.
 
-GPU4569 is explicitly owned by Safari4440. Its main thread `0xb43a` has
+GPU 4569 is explicitly owned by Safari 4440. Its main thread `0xb43a` has
 69 samples (1–69), ending at 03:51:39.849 UTC, with reported process/main
 CPU times 1.299/1.089 seconds. The sequence is:
 
@@ -41,8 +41,8 @@ the corresponding indices:
 
 | Same indices | Explicit GPU wait target | Matching server-side evidence |
 |---|---|---|
-| 56–57 | xpcproxy PID4683, TID `0xb666` | dyld, APFS close and `__posix_spawn`, with running leaves; report says `Execed to: com.apple.audio.SandboxHelper [4683]` |
-| 58–60 | SandboxHelper PID4683, TID `0xb669` | dyld fixups/validation, ObjC class initialization, Foundation/Swift and APFS work |
+| 56–57 | xpcproxy PID 4683, TID `0xb666` | dyld, APFS close and `__posix_spawn`, with running leaves; report says `Execed to: com.apple.audio.SandboxHelper [4683]` |
+| 58–60 | SandboxHelper PID 4683, TID `0xb669` | dyld fixups/validation, ObjC class initialization, Foundation/Swift and APFS work |
 | 61 | Same Helper thread | User-directory/notify initialization, waiting for launchd TID `0xb5eb` |
 | 62–65 | Same Helper thread | `sandbox_init_with_parameters → sandbox_compile_file`; Scheme parsing, allocation/GC and policy output, with multiple running leaves |
 | 66 | Same Helper thread | `xpc_main` listener bootstrap, waiting for launchd TID `0xb551` |
@@ -73,11 +73,11 @@ Helper work 14257–14439; xpcproxy exec transition 61746–61795.
   or interruption of a root watcher.
 - `r112system2` confirmed Safari absent, established canary readiness and
   launched an actual all-process/noIPC sample. It reported sampling complete
-  and symbol processing, then hit its 120-second limit: native 137/watcher124,
+  and symbol processing, then hit its 120-second limit: native 137 / watcher 124,
   report/index zero bytes. This proves output was not saved, not that no raw
   kernel stacks were collected.
 - `r112rawcontrol` saved 2,341,173 bytes from a three-second/100 ms control;
-  exact-copy separate decoding produced 30 real sleep2377 samples. The
+  exact-copy separate decoding produced 30 real sleep 2377 samples. The
   603 Process headers and 1038 Thread rows are occurrence counts, not distinct
   thread counts or GPU initialization evidence.
 - The first GPU-raw preflight found expired sudo credentials and did not
@@ -95,12 +95,12 @@ report or erase earlier failure limits.
 
 ## Actual WebKit timer mapping and the media-preference boundary
 
-A later bounded read-only study binds the26A434 WebKit image to this run's
-report: **LC_UUID`70BEE322-37EE-3B22-8012-4F76BA105C29`** matches
-`r112gpudecode/report.txt:16601`, with version625.1.29.11.28. It verifies two
-separate3.0-second paths in the actual library:
+A later bounded read-only study binds the 26A434 WebKit image to this run's
+report: **LC_UUID `70BEE322-37EE-3B22-8012-4F76BA105C29`** matches
+`r112gpudecode/report.txt:16601`, with version 625.1.29.11.28. It verifies two
+separate 3.0-second paths in the actual library:
 
-- Safari/UIProcess's GPUProcessProxy constructor passes3.0 through the
+- Safari/UIProcess's GPUProcessProxy constructor passes 3.0 through the
   AuxiliaryProcessProxy/ResponsivenessTimer construction path.
 - WebContent's `GPUProcessConnection::waitForDidInitialize` independently waits
   3.0 seconds and invalidates its connection on failure.
@@ -118,7 +118,7 @@ activation nor whether Safari launch preserves the environment was tested;
 it is not a validated workaround or performance configuration.
 
 The media-switch question has a narrower source-only result. At public
-WebKit commit`47fa426c169f32f8fc3dedd2c28bd04af887713d`,
+WebKit commit `47fa426c169f32f8fc3dedd2c28bd04af887713d`,
 `UseGPUProcessForMediaEnabled` controls media routing. The
 GPUConnectionToWebProcess constructor calls `enableMediaPlayback` without
 that runtime preference guarding the call. Its codec defaults, including
@@ -130,7 +130,7 @@ The distinct `MediaPlaybackEnabled` guard identified in the UI process is
 not that GPU-constructor guard.
 [Separate UI-process path](https://github.com/WebKit/WebKit/blob/47fa426c169f32f8fc3dedd2c28bd04af887713d/Source/WebKit/UIProcess/WebProcessProxy.cpp#L3041).
 
-The actual26A434 image confirms the preference key string, **not** equivalence
+The actual 26A434 image confirms the preference key string, **not** equivalence
 of its compiled media-constructor branch to that source revision. Therefore
 neither the key's name nor this source study establishes a standard switch
 that lets a GPU-rendered RGB page skip SandboxHelper startup. The fixed-source
@@ -152,11 +152,11 @@ identity beyond the explicitly verified paths.
 withdrawn CPU experiment `0030-pauth-memo-miss-boundary.patch`; that experiment
 remains rejected. The new main binary is
 `6ad57aa8f969e3f4369ed6bbecb1e1833c18c282b9425e2e2943a06b17f4ac71`,
-with patch SHA256`9059c2a738e6b6203404b71a44558fa79d43239e65b4f56c42a4d6bc0e9c4fad`.
+with patch SHA256 `9059c2a738e6b6203404b71a44558fa79d43239e65b4f56c42a4d6bc0e9c4fad`.
 Forty-file patch reconstruction passed.
 
 The profile checks current virtual-address identity/UUID, the original
-instruction and64-byte context on each eligible helper execution, including
+instruction and 64-byte context on each eligible helper execution, including
 actual runtime PC under `CF_PCREL`. It preserves guest code bytes, disks and
 clock settings. Arming is an explicit paused publication; counters and epochs
 are read back per vCPU. Hot disarm and reset revoke the guard, and migration
@@ -165,101 +165,101 @@ constraints, not a supported Safari preference or a change to the acceptance
 of the original three-second requirement.
 
 Core-final results
-contain five real self-authored **two-vCPU/4KiB** guest groups: off, matching,
-wrong UUID, wrong instruction and wrong context. All exit0/reaped. Matching
-has14 phase visits in order`1,2,3,4,5,6,7,8,9,12,13,10,11,1(reset)`:
+contain five real self-authored **two-vCPU / 4 KiB** guest groups: off, matching,
+wrong UUID, wrong instruction and wrong context. All exit 0 / reaped. Matching
+has 14 phase visits in order `1,2,3,4,5,6,7,8,9,12,13,10,11,1(reset)`:
 
 | Phase visits | Verified boundary |
 |---|---|
-| 1 before arming; 2 | Hot unarmed TBs retain3; then both guarded sites return30 and the non-target remains3. |
+| 1 before arming; 2 | Hot unarmed TBs retain 3; then both guarded sites return 30 and the non-target remains 3. |
 | 3; 4 | UUID mutation rejects replacement; restoring identity works on subsequent execution. |
 | 5 | Current address-space change affects one vCPU independently of the other. |
 | 6; 7; 8 | MMIO identity leaf, MMIO translation-table and unmapped identity are rejected without MMIO callbacks. |
 | 9 | FP-access traps, FPSR, unrelated FP state and scalar upper-lane behavior remain architectural; guard counters do not invent hits. |
 | 12; 13 | Debug identity reads preserve a clear access flag; privileged execution rejects before an unsupported/MMIO walk. |
 | 10 | An explicit MMIO read supplies the positive observation control; matched sites still work. |
-| 11; final1 | Hot disarm restores3; reset clears arming/site counters and leaves ordinary behavior. |
+| 11; final 1 | Hot disarm restores 3; reset clears arming/site counters and leaves ordinary behavior. |
 
 Both virtual-alias directions are checked in every phase, and guest assertions
 verify unchanged code windows and exact FP/counter results. Before the final
-reset, CPU0 has5/5 site hits and10 failures, CPU1 has4/4 and12; reset returns
-counters to0. Read-only counter setters and arming while running are rejected.
-These observations validate the synthetic4KiB boundary; **real macOS16KiB
+reset, CPU0 has 5/5 site hits and 10 failures, CPU1 has 4/4 and 12; reset returns
+counters to 0. Read-only counter setters and arming while running are rejected.
+These observations validate the synthetic 4 KiB boundary; **real macOS 16 KiB
 translation and actual WebKit-site execution remain separate consumer checks**.
 
 Host integration evidence
 is an index of already observed tool completions, not a fabricated raw log or
-another test run. The runner full suite passes48 methods and the host helper
-full suites pass14. Helper tests use synthetic owned-controller/QMP fixtures
+another test run. The runner full suite passes 48 methods and the host helper
+full suites pass 14. Helper tests use synthetic owned-controller/QMP fixtures
 plus real file persistence, not real guest arming. File-service tests exercise
-actual loopback GET/PUT and a child service: the initial full7 invocation has
-6passes and1 bad test assertion. That assertion was corrected to compare the
+actual loopback GET/PUT and a child service: the initial full 7-method invocation has
+6 passes and 1 bad test assertion. That assertion was corrected to compare the
 actual HTTP body hash with the verified child-service wrapper hash, and only
 that one method was rerun successfully. The six retained passes plus the
-corrected method cover seven methods; **no single all-green full7 rerun was
+corrected method cover seven methods; **no single all-green full 7-method rerun was
 observed**. Source hashes in that evidence index were recorded at index creation,
 not retroactively at the earlier test invocations.
 
 The identity-probe build
-passes cross-built Mach-O/import/entry and13 ad-hoc page-hash checks, plus
-5host test methods/22 synthetic dyld-ABI executions under UBSan. It does not
+passes cross-built Mach-O/import/entry and 13 ad-hoc page-hash checks, plus
+5 host test methods / 22 synthetic dyld-ABI executions under UBSan. It does not
 load the target library and the build record has `guest_executed=false`.
 Guest loader/signature/ABI acceptance and a real identity result are unproved
 by those host checks.
 
-## Run125: real probe and partial guards do not prove Safari30s behavior
+## Run125: real probe and partial guards do not prove Safari 30 s behavior
 
-Run125 on6ad57 completed the actual guest probe and eight-vCPU v1 publication.
-The23:39:05 receipt records checksum/signature/designated-requirement success,
-exit0, no timeout and empty stderr. Its metadata is verified without loading or
-calling `dlopen` on WebKit; image count stays81→81. This proves that probe's
+Run125 on 6ad57 completed the actual guest probe and eight-vCPU v1 publication.
+The 23:39:05 receipt records checksum/signature/designated-requirement success,
+exit 0, no timeout and empty stderr. Its metadata is verified without loading or
+calling `dlopen` on WebKit; image count stays 81→81. This proves that probe's
 loader/ABI consumer, not a universal cross-process image base.
 
-Publication at23:40:48 succeeds with each CPU's epoch incremented once.
-The retained epochs then remain`[3,4,4,4,4,4,4,4]`: they must match per CPU,
+Publication at 23:40:48 succeeds with each CPU's epoch incremented once.
+The retained epochs then remain `[3,4,4,4,4,4,4,4]`: they must match per CPU,
 not be equal across CPUs. The counter sequence is:
 
 | Snapshot | Site0 / site1 / guard failures | Boundary |
 |---|---|---|
-| Before-trigger23:43:08.993977 | 0 / 0 / 0 | After old Safari exit/publication, before the actual trigger. |
-| After-prepare23:45:42.314185 | 2 / 0 / 0 | Already after timeline start23:45:30; not a prelaunch baseline. |
-| Observation23:47:24.185145 | 4 / 0 / 0 | Global counter evidence, not a guest PID attribution. |
-|23:48:14.131987 and23:49:41.915822 | 4 / 0 / 0 | Last retained counter observations; not continuous through shutdown. |
+| Before-trigger 23:43:08.993977 | 0 / 0 / 0 | After old Safari exit/publication, before the actual trigger. |
+| After-prepare 23:45:42.314185 | 2 / 0 / 0 | Already after timeline start 23:45:30; not a prelaunch baseline. |
+| Observation 23:47:24.185145 | 4 / 0 / 0 | Global counter evidence, not a guest PID attribution. |
+| 23:48:14.131987 and 23:49:41.915822 | 4 / 0 / 0 | Last retained counter observations; not continuous through shutdown. |
 
-Four site0 guards succeeded in the real16KiB guest. Site1 has no hit, which
-neither proves correct30s behavior nor identifies a specific guard fault.
+Four site0 guards succeeded in the real 16 KiB guest. Site1 has no hit, which
+neither proves correct 30 s behavior nor identifies a specific guard fault.
 The actual ordinary wrapper uploaded prepare, then continued into gpuwatch
-and its3s sleep/open sequence; it had no host counter-read gate. The retained
+and its 3 s sleep/open sequence; it had no host counter-read gate. The retained
 before-trigger snapshot is therefore the usable zero boundary.
 
-Safari1138 owns GPU1245,1417 and1434, all of which receive watchdog requests.
-The first UI request at23:46:39.903 is followed by watchdog23:46:42.906:
-**3.003 s**, or2.803 s from the GPU connection-entry marker. Its30.724 s
+Safari 1138 owns GPU 1245, 1417 and 1434, all of which receive watchdog requests.
+The first UI request at 23:46:39.903 is followed by watchdog 23:46:42.906:
+**3.003 s**, or 2.803 s from the GPU connection-entry marker. Its 30.724 s
 constructor-to-watchdog span is not the target timer interval. Later GPUs
-are requested terminated3.010/3.008 s after launch-completion markers.
+are requested terminated 3.010/3.008 s after launch-completion markers.
 No Safari `DidInitialize` is retained. The two positive initialization events
-belong to nsattributedstringagent clients, with GPU1218/1325 and WebContent1238/
-1326; their request-to-initialize times2.874/2.517 s are already below3s.
-They do not establish Safari success beyond3s within30s.
+belong to nsattributedstringagent clients, with GPU 1218/1325 and WebContent 1238/
+1326; their request-to-initialize times 2.874/2.517 s are already below 3 s.
+They do not establish Safari success beyond 3 s within 30 s.
 
-The23:48:06.092328 native image is white. RGB becomes visible later, behind
-foreground Terminal at23:49:00.236347, with another owner confirmation at
+The 23:48:06.092328 native image is white. RGB becomes visible later, behind
+foreground Terminal at 23:49:00.236347, with another owner confirmation at
 23:49:49.717459 and no reload. Those post-watcher pixels have no retained
 first-GPU/PID association or exact pixel oracle. The two bracketed counter
-snapshots stay4/0/0, and the last read precedes the final image and shutdown.
-Late RGB is not first-GPU success, an ordinary120s-window success or an
-original3-second performance pass.
+snapshots stay 4/0/0, and the last read precedes the final image and shutdown.
+Late RGB is not first-GPU success, an ordinary 120 s-window success or an
+original 3-second performance pass.
 
-Thus the requested30s Safari behavior was **not demonstrated**. Global site0
-hits cannot choose between mapping/site coverage and another unmodified3s
+Thus the requested 30 s Safari behavior was **not demonstrated**. Global site0
+hits cannot choose between mapping/site coverage and another unmodified 3 s
 path. The cause remains unresolved; the claim that the historical UUID came
 only from nsattributedstringagent is not adopted. Inventory was performed,
-but no authored afplay or old315/323s warmup was used, so this is not a matched
+but no authored afplay or old 315/323 s warmup was used, so this is not a matched
 PCM-warmup/performance control.
 
-Keepawake703 was killed/waited, with DONE at23:49:29.181146. Guest-origin
-shutdown is23:51:48.985926 UTC and finalization23:51:49.878012. QEMU and
-guest-files child0/reaped, no host quit and alias cleanup pass. Controller1
+Keepawake 703 was killed/waited, with DONE at 23:49:29.181146. Guest-origin
+shutdown is 23:51:48.985926 UTC and finalization 23:51:49.878012. QEMU and
+guest-files child 0/reaped, no host quit and alias cleanup pass. Controller 1
 is only unavailable post-exit final capture with `errors=[]`. The event was
 recovered by post-exit drain and `guest_shutdown_wait=not_attempted`: this
 macOS close did not exercise the new bounded race-wait branch. Full filesystem
@@ -272,26 +272,26 @@ retain source lines, hashes, counter epochs and target/non-target distinctions.
 ## Same identity can have different process slides
 
 The existing Run112 report supplies a concrete counterexample to treating
-one process's probe base as universal. Safari4440, GPU4569, Networking4551 and
-WebContent4505 all list WebKit625.1.29.11.28 with UUID
+one process's probe base as universal. Safari 4440, GPU 4569, Networking 4551 and
+WebContent 4505 all list WebKit 625.1.29.11.28 with UUID
 `70BEE322-37EE-3B22-8012-4F76BA105C29` and shared-cache UUID
 `C284A291-B68B-3D0D-A1A0-3F866F87EFDC`. Safari's image/cache base group differs
-from the common GPU/Networking/WebContent group. GPU4569 explicitly names
-Safari4440 as responsible. Exact addresses remain in the original archive.
+from the common GPU/Networking/WebContent group. GPU 4569 explicitly names
+Safari 4440 as responsible. Exact addresses remain in the original archive.
 
 Locators in `r112gpudecode.tgz!r112gpudecode/report.txt`:
-Safari section46524–49654 (cache46532/image49629), GPU16029–16605
-(cache16037/responsible16039/image16601), Networking17199–18218 (image18212),
-WebContent18219–19270 (cache18227/image19259). There is no named
+Safari section 46524–49654 (cache 46532 / image 49629), GPU 16029–16605
+(cache 16037 / responsible 16039 / image 16601), Networking 17199–18218 (image 18212),
+WebContent 18219–19270 (cache 18227 / image 19259). There is no named
 nsattributedstringagent section from which to assign its address group;
 this is not an absence-of-process claim. These archived differences invalidate
 a general mapping assumption, but do not establish Run125's unique cause.
 
 ## 0031 derives the candidate base at each actual execution
 
-The0031 build is
+The 0031 build is
 `b4d85fe0d7e4e10d7b1c99f95ecfd54d8079a3ecb8665245c47db8e514a2774a`;
-patch`0031-arm-timeout-runtime-slide.patch` has SHA256
+patch `0031-arm-timeout-runtime-slide.patch` has SHA256
 `5c000c5dbbb511f07f02eba3ef4c40c4371cac319e1b164e3c4437a104a6d493`.
 For each eligible instruction, QEMU derives the candidate base from actual
 runtime PC minus the fixed site offset, then checks current-space UUID/header
@@ -300,50 +300,50 @@ boolean `armed`, never a probe-process base. The probe remains process-local
 material/ABI evidence. Code bytes, disks and clock settings remain unchanged.
 
 Core results
-pass five actual two-CPU/4KiB groups, all exit0/reaped, with19matching phase
+pass five actual two-CPU / 4 KiB groups, all exit 0 / reaped, with 19 matching phase
 visits. Complete images at two bases work in both TB-generation orders,
 including different per-CPU TTBRs; a code-only alias without matching identity
 is rejected. FP, access-flag, MMIO positive/negative, reset and other existing
-controls remain covered. This is still synthetic4KiB evidence, not a completed
-real16KiB WebKit consumer.
+controls remain covered. This is still synthetic 4 KiB evidence, not a completed
+real 16 KiB WebKit consumer.
 
 Host v2 evidence
-records15full helper methods,3targeted runner methods and a full7-method
-loopback/file-service pass, plus actual0030+0031 manifest preflight. The3runner
-methods are not a rerun of the earlier48-method suite; the22probe ABI executions
+records 15 full helper methods, 3 targeted runner methods and a full 7-method
+loopback/file-service pass, plus actual 0030+0031 manifest preflight. The 3 runner
+methods are not a rerun of the earlier 48-method suite; the 22 probe ABI executions
 were not rerun. The index preserves completed tool observations without
 inventing raw logs or test-time source snapshots.
 
-Public/private publication schema2 uses
+Public/private publication schema 2 uses
 `runtime-pc-slide-armed-bool-v2`. `rejections` counts eligible candidate guard
 rejections, **not Safari errors**. Global site hits remain cumulative
 per-CPU/mapping observations, without PID attribution even with valid epoch
-deltas. Historical Run125 schema1/global-base/`failures` records are unchanged;
-legacy receipts are rejected, not migrated. Original3s performance pass remains
+deltas. Historical Run125 schema 1 / global-base / `failures` records are unchanged;
+legacy receipts are rejected, not migrated. Original 3 s performance pass remains
 false for this diagnostic.
 
 ## Run126 could not reach the target trial
 
-Run126 booted b4d85, but guest curl7 could not download the inventory helper.
-A current host GET returned200 and guest route lookup reported not-in-table.
+Run126 booted b4d85, but guest curl 7 could not download the inventory helper.
+A current host GET returned 200 and guest route lookup reported not-in-table.
 The retained en0 image is inactive without IPv4, but its MAC differs from the
 configured VirtIO target; that observation cannot establish target-interface
 state. The no-route/curl failure and target CTRL overlap are independent. Inventory execution, identity probe, arming
 and target Safari were unavailable. Restored old Safari pixels are not a
-new trial, and no empty Safari-analysis JSON was created. All8CPUs remain
-unarmed with site0/site1/rejections0 in the00:23:37 final snapshot.
+new trial, and no empty Safari-analysis JSON was created. All 8 CPUs remain
+unarmed with site0/site1/rejections 0 in the 00:23:37 final snapshot.
 
-A bounded371-byte read records network CTRL queue2 size64 with device used
-only16B after avail, inside its134B expected extent: published physical overlap.
-One used entry has length1 and ACK0 for RX_ALLMULTI. RX/TX queues0/1 remain256
-with4096B gaps. These non-atomic observations do not translate the guest's
+A bounded 371-byte read records network CTRL queue 2 size 64 with device used
+only 16 B after avail, inside its 134 B expected extent: published physical overlap.
+One used entry has length 1 and ACK 0 for RX_ALLMULTI. RX/TX queues 0/1 remain 256
+with 4096 B gaps. These non-atomic observations do not translate the guest's
 internal used pointer or prove callback/IRQ history, so they do not establish
-Run118's same root cause or a0031-induced regression.
+Run118's same root cause or a 0031-induced regression.
 
-Keepawake686 was killed/waited. Guest-origin shutdown is00:25:49.261682 UTC
-on November8, finalization00:25:50.434078. QEMU/files0reaped, nohostquit,
-strictguesttrue and aliasesremoved pass; controller1 is finalcapture unavailable
-with `errors=[]`. Again, post-exit drain leaves the5s wait not attempted.
+Keepawake 686 was killed/waited. Guest-origin shutdown is 00:25:49.261682 UTC
+on November 8, finalization 00:25:50.434078. QEMU/files 0 reaped, no host quit,
+strict guest true and aliases removed pass; controller 1 is final capture unavailable
+with `errors=[]`. Again, post-exit drain leaves the 5 s wait not attempted.
 Filesystem cleanliness is unproved. Run126 application
 and network read
 retain this unavailable-consumer boundary.
@@ -352,128 +352,128 @@ retain this unavailable-consumer boundary.
 
 `0032-virtio-net-control-queue-size.patch` builds as
 `4a433616dc04e90ba41d720fe0dfb8925294799eff94a6eef24b52108a6b4d66`
-with patch SHA256`22493bcf050ca468e8907245d109e4d156407db1d2942dc40f1c728e2e46a926`.
-The uint16 `ctrl_queue_size` property defaults64 and accepts powers of two1–1024.
-Realize and MQ rebuild use the same field. RX/TX256, feature/ACK handling and
-guest physical addresses are not rewritten. Pinned26A434 AppleNetwork source
-reads the transport-announced size without a64clamp and enters the common
+with patch SHA256 `22493bcf050ca468e8907245d109e4d156407db1d2942dc40f1c728e2e46a926`.
+The uint16 `ctrl_queue_size` property defaults to 64 and accepts powers of two 1–1024.
+Realize and MQ rebuild use the same field. RX/TX 256, feature/ACK handling and
+guest physical addresses are not rewritten. Pinned 26A434 AppleNetwork source
+reads the transport-announced size without a 64 clamp and enters the common
 queue allocator; actual guest mapping/consumption remains a separate check.
 
 Actual device tests
-pass default, explicit64, explicit512 and MQ-rebuild cases, all exit0/reaped.
-The512 case completes515 controls across wrap, changing preset ACK255 to0 for
-valid RX_ALLMULTI and to1 for an invalid class, with direct/indirect SG and
-canaries intact. The separate data checks transfer60B in both socket directions
-through unchanged RX/TX256 queues. Actual MQ generations3→5→3→5 preserve
-CTRL512 and complete ACKs. Vhost evidence is limited to queue advertisement/
-linkdown handshake; no offloaded data plane is claimed. Invalid0/3/2048/65535/
+pass default, explicit 64, explicit 512 and MQ-rebuild cases, all exit 0 / reaped.
+The 512 case completes 515 controls across wrap, changing preset ACK 255 to 0 for
+valid RX_ALLMULTI and to 1 for an invalid class, with direct/indirect SG and
+canaries intact. The separate data checks transfer 60 B in both socket directions
+through unchanged RX/TX 256 queues. Actual MQ generations 3→5→3→5 preserve
+CTRL 512 and complete ACKs. Vhost evidence is limited to queue advertisement/
+linkdown handshake; no offloaded data plane is claimed. Invalid 0/3/2048/65535/
 65536 configurations are rejected. Forty-two-file patch reconstruction passed.
 
 The installed opt-in `--net-control-queue-size 64|512` requires user networking
-and matching0032. It only appends the control-size device property; omission
+and matching 0032. It only appends the control-size device property; omission
 preserves default arguments. The host evidence index
-records5targeted runner methods,2FirmwareSession argv methods and one focused
+records 5 targeted runner methods, 2 FirmwareSession argv methods and one focused
 recheck after adding a post-spawn metadata assertion, plus actual manifest
 preflight. It reuses completed tool observations, not raw logs or a full-suite
 rerun. Those fixtures alone do not establish macOS network recovery.
 
 Run127
-actually started at00:40:54.185035 UTC from126's strict guest-shutdown state,
+actually started at 00:40:54.185035 UTC from Run126's strict guest-shutdown state,
 without an unclean override. It retains the v2 diagnostic and no afplay/old
-warmup. The early00:42:20.519241 read confirms selectedCTRL512, used at
-avail+4096B, unchanged RX/TX256 and no physical overlap in all three device
-rings. CTRL index0 had no completion in that early snapshot; that geometry alone
-was not network recovery. Later, the00:50:25–00:51:01 inventory completes an
-actual guest GET200/PUT chain and reports registered/matched single-output
-CoreAudio48kHz stereo. The00:53:37 interface record identifies **en1** by the
-configured target MAC, with10.0.2.15/24, UP/RUNNING/active and a10.0.2.2 route.
-The retained old126 en0 image has a different MAC, so its inactive state cannot
+warmup. The early 00:42:20.519241 read confirms selected CTRL 512, used at
+avail + 4096 B, unchanged RX/TX 256 and no physical overlap in all three device
+rings. CTRL index 0 had no completion in that early snapshot; that geometry alone
+was not network recovery. Later, the 00:50:25–00:51:01 inventory completes an
+actual guest GET 200 / PUT chain and reports registered/matched single-output
+CoreAudio 48 kHz stereo. The 00:53:37 interface record identifies **en1** by the
+configured target MAC, with 10.0.2.15/24, UP/RUNNING/active and a 10.0.2.2 route.
+The retained old Run126 en0 image has a different MAC, so its inactive state cannot
 be retroactively assigned to the target VirtIO device.
 
-The later network read has RXused4038, TXused2297 and CTRL512used/last-avail13
+The later network read has RX used 4038, TX used 2297 and CTRL 512 used/last-avail 13
 without physical overlap. Its current descriptor does not locate a reliable
 ACK and may have been reused; no ACK is inferred from an earlier zero. These
-facts prove the current HTTP chain works underCTRL512, not all network
+facts prove the current HTTP chain works under CTRL 512, not all network
 functionality or Run126's unique cause. Guest internal used-VA translation remains unverified. The completed v2
 Safari consumer result below adds bounded initialization progress; it does
-not establish Run126's unique cause. Original3s performance pass remains false.
+not establish Run126's unique cause. Original 3 s performance pass remains false.
 
 ## Run127: bounded Safari initialization progress under the diagnostic
 
 The completed Run127 analysis
-retains one Safari-owned GPU1135, responsible to Safari1017, without mixing
+retains one Safari-owned GPU 1135, responsible to Safari 1017, without mixing
 nsattributedstringagent initialization into the target result. The first
-matched client is WebContent1069/connection18:
+matched client is WebContent 1069 / connection 18:
 
-| Matched event | Guest UTC on November8 |
+| Matched event | Guest UTC on November 8 |
 |---|---|
-| Client connection create |00:59:13.075 |
-| Safari UI request |00:59:13.091 |
-| GPU1135 server connection entry |00:59:13.099 |
-| Client `DidInitialize` |00:59:17.172 |
+| Client connection create | 00:59:13.075 |
+| Safari UI request | 00:59:13.091 |
+| GPU 1135 server connection entry | 00:59:13.099 |
+| Client `DidInitialize` | 00:59:17.172 |
 
-That is4.081 s from UI request and4.073 s from server entry: **above3s and
-below30s**. No GPU watchdog request is retained. The same GPU later initializes
-WebContent1271/connection21; the requested main frame finishes at00:59:31.248
-and emits page timing at00:59:34.982. Three Safari WebProcess-unresponsive
+That is 4.081 s from UI request and 4.073 s from server entry: **above 3 s and
+below 30 s**. No GPU watchdog request is retained. The same GPU later initializes
+WebContent 1271 / connection 21; the requested main frame finishes at 00:59:31.248
+and emits page timing at 00:59:34.982. Three Safari WebProcess-unresponsive
 notifications remain, so this does not mean all responsiveness problems have
 been solved.
 
-The before-trigger00:56:59 and after-prepare00:58:15 snapshots are both zero;
-after-prepare is still not assumed to be prelaunch. After-archive01:00:36 and
-before-shutdown01:01:17 both retain site0=1 on CPU2, site1=0 and rejections=0,
-with the same per-CPU epochs`[3,4,4,4,4,4,4,4]`. All eight publication setters
+The before-trigger 00:56:59 and after-prepare 00:58:15 snapshots are both zero;
+after-prepare is still not assumed to be prelaunch. After-archive 01:00:36 and
+before-shutdown 01:01:17 both retain site0=1 on CPU2, site1=0 and rejections=0,
+with the same per-CPU epochs `[3,4,4,4,4,4,4,4]`. All eight publication setters
 were boolean true; no probe base was published. This is one observed site0
 guard, not a PID-qualified site trace or validation of both fixed sites.
 The last counter read precedes later pixels and shutdown.
 
-Native captures at01:00:46.348176 and01:01:54.903683 show RGB, first with Safari
+Native captures at 01:00:46.348176 and 01:01:54.903683 show RGB, first with Safari
 foreground and later behind Terminal. Their first presentation time and exact
 pixel fidelity were not independently measured. First-GPU progress comes from
 the separate ownership/connection-ID chain, not from these later pictures.
-The result is **limited initialization progress under the enabled finite30s
-diagnostic**, not an original3s performance pass, a matched performance
+The result is **limited initialization progress under the enabled finite 30 s
+diagnostic**, not an original 3 s performance pass, a matched performance
 reproduction, complete stability or a unique explanation of Run125/126.
 Site1 remains unobserved; its zero count is not a proof that the site was unused
 or that every mapping was covered. No authored afplay or old warmup ran.
 
-Keepawake727 was killed/waited. Guest-origin shutdown occurred at
-01:04:58.963146 UTC, finalization01:05:00.180448. QEMU and guest-files child
-exit0/reaped, nohostquit and alias cleanup pass; controller1 is unavailable
+Keepawake 727 was killed/waited. Guest-origin shutdown occurred at
+01:04:58.963146 UTC, finalization 01:05:00.180448. QEMU and guest-files child
+exit 0 / reaped, no host quit and alias cleanup pass; controller 1 is unavailable
 post-exit final capture with `errors=[]`. The event came from post-exit drain
-and the5s wait was not attempted. Filesystem cleanliness is unproved.
+and the 5 s wait was not attempted. Filesystem cleanliness is unproved.
 Run127 application
 keeps this closure and the diagnostic limits separate.
 
 ## Run128: fixed WebGL2 render and raw readback complete
 
 The actual macOS oracle result
-passes both complete96×64 RGBA8 outputs: offscreen FBO and default framebuffer,
-each24576bytes, SHA256
+passes both complete 96×64 RGBA8 outputs: offscreen FBO and default framebuffer,
+each 24576 bytes, SHA256
 `d8da4828f987b4c3334729f48fdeb6036bd810c23d16526fcca6373c203355da`,
 with zero mismatched bytes. Context attributes, actual dimensions, shader
 compile/program link, GL errors and binary PUTs also pass. The API reports
-WebGL2/GLSL ES3 and `Apple GPU`; these strings do not establish physical GPU
+WebGL2/GLSL ES 3 and `Apple GPU`; these strings do not establish physical GPU
 execution, scanout, FPS, latency or general WebGL/Metal coverage. Native
 02:06:18.737142 shows upper cyan/magenta/yellow and lower red/green/blue.
 The exact oracle is raw framebuffer data, not a native screenshot comparison.
 
 The unique Safari analysis
-retains Safari1013 and one owned GPU1124, with zero GPU watchdog requests.
-For first WebContent1058/connection18, UIrequest→DidInitialize is3.781s
-and GPU entry→DidInitialize3.752s. The target page uses WebContent1311 /
-connection21: create→DidInitialize13.716s, UIrequest13.676s and GPU entry13.631s.
+retains Safari 1013 and one owned GPU 1124, with zero GPU watchdog requests.
+For first WebContent 1058 / connection 18, UI request→DidInitialize is 3.781 s
+and GPU entry→DidInitialize 3.752 s. The target page uses WebContent 1311 /
+connection 21: create→DidInitialize 13.716 s, UI request 13.676 s and GPU entry 13.631 s.
 These are log event gaps, not measured `waitForDidInitialize` blocking times.
-Two WebProcess unresponsive notifications remain. Final02:06:28 counters are
-site0=1 only onCPU2, site1=0, rejections=0 with unchanged per-CPU epochs
+Two WebProcess unresponsive notifications remain. Final 02:06:28 counters are
+site0=1 only on CPU2, site1=0, rejections=0 with unchanged per-CPU epochs
 `[3,4,4,4,4,4,4,4]`. Global counters do not provide PID attribution; site1 is
-unvalidated and original3s performance remains false.
+unvalidated and original 3 s performance remains false.
 
-The page reports start02:05:20.220 and finish02:05:35.691. Offscreen/default
-PUTs arrive at02:05:34/35 and JSON at02:05:36, before the ordinary watcher ends
-02:05:45 and archive completes02:05:48. The retained timeline spans133s despite
-the requested120s watcher; it is not a ≤120s end-to-end result. No optional
-late60s, reload, authored afplay or previous warmup was used. This new content
+The page reports start 02:05:20.220 and finish 02:05:35.691. Offscreen/default
+PUTs arrive at 02:05:34/35 and JSON at 02:05:36, before the ordinary watcher ends
+02:05:45 and archive completes 02:05:48. The retained timeline spans 133 s despite
+the requested 120 s watcher; it is not a ≤120 s end-to-end result. No optional
+late 60 s, reload, authored afplay or previous warmup was used. This new content
 load is not a matched Run127 performance comparison.
 
 The earlier host Chrome/SwiftShader control
@@ -481,19 +481,19 @@ remains separate software-fixture evidence: two exact outputs, eight expected
 negative rejections and three syntax checks. Browser/service cleanup passed;
 the distinct real-child cleanup-race regression did not repeat rendering.
 The transport index
-records seven targeted methods (URL3, legacy directory1, GET/PUT/render2,
-ordinary helper1), with shell syntax separate. It is a completed-tool index,
+records seven targeted methods (URL 3, legacy directory 1, GET/PUT/render 2,
+ordinary helper 1), with shell syntax separate. It is a completed-tool index,
 not a fabricated raw log or test-time source snapshot. Existing URL behavior
 was preserved; this did not introduce a global URL whitelist.
 
-Keepawake713 was killed/waited. Guest shutdown is02:10:41.940319UTC and
-finalization02:10:43.049062. QEMU123269 and files123248 exit0/reaped;
-controller123246 ends1 only because natural exit prevents final capture,
+Keepawake 713 was killed/waited. Guest shutdown is 02:10:41.940319 UTC and
+finalization 02:10:43.049062. QEMU 123269 and files 123248 exit 0 / reaped;
+controller 123246 ends 1 only because natural exit prevents final capture,
 with `errors=[]`, no host quit and aliases removed. The event is post-exit
-drain, so the5s natural-exit wait was not attempted. Filesystem cleanliness
+drain, so the 5 s natural-exit wait was not attempted. Filesystem cleanliness
 remains unproved. Run128 application
 is the closed consumer record. Latest completed and strict guest shutdown
-are128; no VM remains active. The user requests temporary project maintenance
+are Run128; no VM remains active. The user requests temporary project maintenance
 next, not Run129 or a new feature experiment. Maintenance has not yet been
 executed; the long-term goal is neither complete nor paused.
 
