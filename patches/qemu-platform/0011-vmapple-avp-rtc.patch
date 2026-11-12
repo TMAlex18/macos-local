@@ -1,0 +1,224 @@
+VMApple AVP RTC: native version, Unix microseconds and register state.
+
+Counter time advances from host UTC using a monotonic clock. The native
+Match register does not schedule an alarm; host power notifications and
+migration lifecycle are not implemented. No guest firmware is changed.
+
+diff --git a/hw/vmapple/meson.build b/hw/vmapple/meson.build
+--- a/hw/vmapple/meson.build
++++ b/hw/vmapple/meson.build
+@@ -2,6 +2,6 @@
+ 
+ system_ss.add(when: 'CONFIG_VMAPPLE_AES',  if_true: files('aes.c'))
+ system_ss.add(when: 'CONFIG_VMAPPLE_BDIF', if_true: files('bdif.c'))
+-system_ss.add(when: 'CONFIG_VMAPPLE_CFG',  if_true: files('cfg.c'))
++system_ss.add(when: 'CONFIG_VMAPPLE_CFG',  if_true: files('cfg.c', 'rtc.c'))
+ system_ss.add(when: 'CONFIG_VMAPPLE_VIRTIO_BLK',  if_true: files('virtio-blk.c'))
+ specific_ss.add(when: 'CONFIG_VMAPPLE',     if_true: files('vmapple.c'))
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -113,6 +113,7 @@
+     VMAPPLE_GICV2M,
+     VMAPPLE_UART,
+     VMAPPLE_RTC,
++    VMAPPLE_AVP_RTC,
+     VMAPPLE_PCIE,
+     VMAPPLE_PCIE_MMIO,
+     VMAPPLE_PCIE_ECAM,
+@@ -136,6 +137,7 @@
+ 
+     [VMAPPLE_UART] =               { 0x20010000, 0x00010000 },
+     [VMAPPLE_RTC] =                { 0x20050000, 0x00001000 },
++    [VMAPPLE_AVP_RTC] =            { 0x30240000, 0x00010000 },
+     [VMAPPLE_GPIO] =               { 0x20060000, 0x00001000 },
+     [VMAPPLE_PVPANIC] =            { 0x20070000, 0x00000002 },
+     [VMAPPLE_BDOOR] =              { 0x30000000, 0x00200000 },
+@@ -153,6 +155,7 @@
+ static const int irqmap[] = {
+     [VMAPPLE_UART] = 1,
+     [VMAPPLE_RTC] = 2,
++    [VMAPPLE_AVP_RTC] = 0x13, /* Original DT GIC INTID 51, excluding 32 private IRQs. */
+     [VMAPPLE_GPIO] = 0x5,
+     [VMAPPLE_APV_IOSFC] = 0x10,
+     [VMAPPLE_APV_GFX] = 0x11,
+@@ -470,6 +473,8 @@
+     int irq = vms->irqmap[VMAPPLE_RTC];
+ 
+     sysbus_create_simple("pl031", base, qdev_get_gpio_in(vms->gic, irq));
++    sysbus_create_simple("vmapple-avp-rtc", vms->memmap[VMAPPLE_AVP_RTC].base,
++                        qdev_get_gpio_in(vms->gic, vms->irqmap[VMAPPLE_AVP_RTC]));
+ }
+ 
+ static DeviceState *gpio_key_dev;
+diff --git a/hw/vmapple/trace-events b/hw/vmapple/trace-events
+--- a/hw/vmapple/trace-events
++++ b/hw/vmapple/trace-events
+@@ -2,6 +2,8 @@
+ # SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ # cfg.c
++vmapple_avp_rtc_read(uint64_t offset, unsigned size, uint64_t value) "offset=0x%"PRIx64" size=%u value=0x%"PRIx64
++vmapple_avp_rtc_write(uint64_t offset, unsigned size, uint64_t value) "offset=0x%"PRIx64" size=%u value=0x%"PRIx64
+ vmapple_cfg_dma_request(uint64_t request, uint8_t type, uint32_t operation, uint64_t buffer, uint64_t capacity) "request=0x%"PRIx64" type=%u op=%u buffer=0x%"PRIx64" capacity=0x%"PRIx64
+ vmapple_cfg_dma_response(uint32_t operation, uint64_t status, uint64_t size) "op=%u status=%"PRIu64" size=0x%"PRIx64
+ 
+diff --git a/hw/vmapple/rtc.c b/hw/vmapple/rtc.c
+new file mode 100644
+--- /dev/null
++++ b/hw/vmapple/rtc.c
+@@ -0,0 +1,154 @@
++/* VMApple AVP real-time clock, based on the original 26A434 device contract.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "hw/core/sysbus.h"
++#include "hw/core/irq.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "qemu/log.h"
++#include "trace.h"
++
++#define TYPE_VMAPPLE_AVP_RTC "vmapple-avp-rtc"
++OBJECT_DECLARE_SIMPLE_TYPE(VMAppleAvpRtcState, VMAPPLE_AVP_RTC)
++
++struct VMAppleAvpRtcState {
++    SysBusDevice parent_obj;
++    MemoryRegion mmio;
++    qemu_irq irq;
++    uint64_t base_us;
++    int64_t monotonic_start_ns;
++    uint64_t load;
++    uint32_t mask;
++    uint32_t raw_status;
++};
++
++static uint64_t avp_rtc_count(VMAppleAvpRtcState *s)
++{
++    /* Native time is Unix epoch microseconds advanced by host monotonic
++     * time. REALTIME is QEMU's host monotonic clock, including VM pauses.
++     */
++    return s->base_us + (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) -
++                          s->monotonic_start_ns) / 1000;
++}
++
++static void avp_rtc_update_irq(VMAppleAvpRtcState *s)
++{
++    qemu_set_irq(s->irq, (s->mask & s->raw_status) != 0);
++}
++
++static uint64_t avp_rtc_read(void *opaque, hwaddr offset, unsigned size)
++{
++    VMAppleAvpRtcState *s = opaque;
++    uint64_t value;
++
++    switch (offset & ~7ULL) {
++    case 0x00: value = avp_rtc_count(s); break;
++    case 0x08: value = 0; break; /* Native Match has no alarm implementation. */
++    case 0x10: value = s->load; break;
++    case 0x18: value = 1; break;
++    case 0x20: value = s->mask; break;
++    case 0x28: value = s->raw_status; break;
++    case 0x30: value = s->mask & s->raw_status; break;
++    case 0x38: value = 0; break;
++    case 0x40: value = 0xf001; break;
++    default:
++        qemu_log_mask(LOG_UNIMP, "avp-rtc: unknown read at 0x%" HWADDR_PRIx "\n", offset);
++        value = 0;
++        break;
++    }
++    value >>= (offset & 7) * 8;
++    trace_vmapple_avp_rtc_read(offset, size, value);
++    return value;
++}
++
++static void avp_rtc_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
++{
++    VMAppleAvpRtcState *s = opaque;
++    unsigned shift = (offset & 7) * 8;
++
++    trace_vmapple_avp_rtc_write(offset, size, value);
++    switch (offset & ~7ULL) {
++    case 0x10:
++        if (size == 4) {
++            uint64_t mask = UINT64_C(0xffffffff) << shift;
++            s->load = (s->load & ~mask) | ((value << shift) & mask);
++        } else {
++            s->load = value;
++        }
++        s->base_us = s->load;
++        s->monotonic_start_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++        break;
++    case 0x20:
++        if (!shift) {
++            s->mask = value & 7;
++            avp_rtc_update_irq(s);
++        }
++        break;
++    case 0x38:
++        if (!shift) {
++            s->raw_status &= ~(value & 7);
++            avp_rtc_update_irq(s);
++        }
++        break;
++    default:
++        /* Native counter/Match/Control/version and reserved writes do not
++         * change state. Host power-event delivery is not modeled here.
++         */
++        break;
++    }
++}
++
++static const MemoryRegionOps avp_rtc_ops = {
++    .read = avp_rtc_read,
++    .write = avp_rtc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 8,
++    .impl.min_access_size = 4,
++    .impl.max_access_size = 8,
++};
++
++static void avp_rtc_reset(Object *obj, ResetType type)
++{
++    VMAppleAvpRtcState *s = VMAPPLE_AVP_RTC(obj);
++
++    s->base_us = g_get_real_time();
++    s->monotonic_start_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    s->load = 0;
++    s->mask = 0;
++    s->raw_status = 0;
++    avp_rtc_update_irq(s);
++}
++
++static void avp_rtc_init(Object *obj)
++{
++    VMAppleAvpRtcState *s = VMAPPLE_AVP_RTC(obj);
++
++    memory_region_init_io(&s->mmio, obj, &avp_rtc_ops, s, "VMApple AVP RTC", 0x10000);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
++    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
++}
++
++static void avp_rtc_class_init(ObjectClass *klass, const void *data)
++{
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    rc->phases.hold = avp_rtc_reset;
++    dc->desc = "VMApple AVP Unix-microsecond RTC";
++}
++
++static const TypeInfo avp_rtc_type = {
++    .name = TYPE_VMAPPLE_AVP_RTC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(VMAppleAvpRtcState),
++    .instance_init = avp_rtc_init,
++    .class_init = avp_rtc_class_init,
++};
++
++static void avp_rtc_register_types(void)
++{
++    type_register_static(&avp_rtc_type);
++}
++type_init(avp_rtc_register_types)

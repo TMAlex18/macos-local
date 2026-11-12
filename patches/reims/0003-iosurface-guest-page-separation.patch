@@ -1,0 +1,76 @@
+diff --git a/crates/reims-vgpu-core/src/iosurface/descriptor.rs b/crates/reims-vgpu-core/src/iosurface/descriptor.rs
+index 122b9d1..403143f 100644
+--- a/crates/reims-vgpu-core/src/iosurface/descriptor.rs
++++ b/crates/reims-vgpu-core/src/iosurface/descriptor.rs
+@@ -498,7 +498,7 @@ pub(super) fn surface_spec<P: Platform>(
+         log::debug!("the surface is host-only");
+         return Some(spec);
+     }
+-    let page = p.vm().page_size();
++    let page = crate::guest::records::APV_PAGE_SIZE;
+     spec.client_address_ranges = Some(
+         slot.pages
+             .iter()
+diff --git a/crates/reims-vgpu-core/src/iosurface/device.rs b/crates/reims-vgpu-core/src/iosurface/device.rs
+index 035fc0a..edfe5c9 100644
+--- a/crates/reims-vgpu-core/src/iosurface/device.rs
++++ b/crates/reims-vgpu-core/src/iosurface/device.rs
+@@ -275,7 +275,7 @@ impl<P: Platform> IoSurfaceHostDevice<P> {
+         platform: &Arc<P>,
+         descriptor: &IoSurfaceHostDeviceDescriptor,
+     ) -> Result<HostDeviceHandle<P>, IoSurfaceRefusal> {
+-        let page = platform.vm().page_size();
++        let page = crate::guest::records::APV_PAGE_SIZE;
+         let table_len = page / const { NonZeroU64::new(TABLE_ENTRY_SIZE).unwrap() };
+         let descriptors_per_page = page / Form::First.size();
+         let mmio_length = descriptor.mmio_length;
+@@ -378,14 +378,17 @@ impl<P: Platform> HostDeviceCore<P> {
+             })
+     }
+ 
+-    /// The VM page size.
++    /// The guest's page size for IOSurface descriptor tables and page numbers.
++    ///
++    /// On cross-architecture Linux hosts it differs from the host VM page
++    /// granule (x86_64 host: 4 KiB; ARM64 guest: 16 KiB).
+     pub(super) fn page_size(&self) -> u64 {
+-        self.platform.vm().page_size()
++        crate::guest::records::APV_PAGE_SIZE
+     }
+ 
+-    /// The VM page shift.
++    /// The guest's page-number shift, not the host memory allocation shift.
+     pub(super) fn page_shift(&self) -> u32 {
+-        self.platform.vm().page_shift()
++        crate::guest::records::APV_PAGE_SHIFT
+     }
+ 
+     /// Another reference to the IOSurface mapped at `mapping_id`, made on the device's queue;
+diff --git a/crates/reims-vgpu-core/src/iosurface/testing.rs b/crates/reims-vgpu-core/src/iosurface/testing.rs
+index 6d20e37..238c733 100644
+--- a/crates/reims-vgpu-core/src/iosurface/testing.rs
++++ b/crates/reims-vgpu-core/src/iosurface/testing.rs
+@@ -28,10 +28,11 @@ use crate::testkit::platform::FakePlatform;
+ 
+ pub(super) type Dev = IoSurfaceHostDevice<FakePlatform>;
+ 
+-/// The host's VM page, which the mapper's tables count.
+-pub(super) const PAGE: u64 = crate::testkit::guest_ram::PAGE_SIZE;
++/// Synthetic *guest* page for IOSurface page-table scenarios.
++/// Distinct from the real host page size used by FakeVm's memory allocator.
++pub(super) const PAGE: u64 = crate::guest::records::APV_PAGE_SIZE;
+ /// The descriptor pages, from `DPAGE` on: 16 KiB, 16 second-form or 32 first-form descriptors,
+-/// one page on a 16 KiB host and four on a 4 KiB one.
++/// one page on a 16 KiB guest and four on a 4 KiB guest.
+ pub(super) const DESCRIPTOR_PAGES: u64 = 0x4000 / PAGE;
+ /// Guest RAM at 1 MiB: 16 pages on a 16 KiB host, and ten pages from `SURF` on on every host.
+ pub(super) const B: u64 = 0x10_0000;
+@@ -106,7 +107,7 @@ pub(super) fn rig_raising(on_raise: impl Fn(u32) + Send + Sync + 'static) -> Rig
+ 
+ /// A page-table entry naming `pa`.
+ pub(super) fn pte(pa: u64, table: bool) -> u32 {
+-    (((pa >> crate::testkit::vm::PAGE_SHIFT) as u32) << 2) | 1 | if table { 2 } else { 0 }
++    (((pa >> crate::guest::records::APV_PAGE_SHIFT) as u32) << 2) | 1 | if table { 2 } else { 0 }
+ }
+ 
+ /// A valid second-form descriptor of `pages` guest pages whose root table is at `root`.

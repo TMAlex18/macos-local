@@ -1,0 +1,259 @@
+Subject: [LOCAL RESEARCH] vmapple: cache protected CTRR RAM through one shared ROMD backing
+
+Local experiment, not intended for upstream submission. Borrow the existing
+RAMBlock identity for a full-sized ROMD view and map validated read-only
+ranges through aliases. Normal CPU/DMA writes still return MEMTX_ERROR;
+enabled writable ranges use ordinary RAM/SMC handling. No RAM copy, second
+RAMBlock, PAuth change, or new migration support. Reset/unrealize remove
+range mappings; the borrowed reference lives until the view owner finalizes.
+Privileged debugger/ROM-loading access keeps standard QEMU ROMD semantics.
+
+diff --git a/hw/vmapple/ctrr.c b/hw/vmapple/ctrr.c
+--- a/hw/vmapple/ctrr.c
++++ b/hw/vmapple/ctrr.c
+@@ -3,7 +3,7 @@
+  *
+  * This is a normal QEMU guest-memory device model. It does not use host
+  * hypervisor APIs, does not patch firmware, and never reports a successful
+- * protection operation without installing its guest-physical overlay.
++ * read-only protection operation without installing its guest-physical overlay.
+  *
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+@@ -47,6 +47,9 @@
+ struct VMAppleCtrrState {
+     SysBusDevice parent_obj;
+     MemoryRegion regs;
++    MemoryRegion read_only_ram;
++    MemoryRegion *backing_ram;
++    bool views_initialized;
+     MemoryRegion *system_memory;
+     MemoryRegion *ram;
+     uint64_t ram_base;
+@@ -106,30 +109,36 @@
+     uint64_t size = r->upper - r->lower + s->page_size;
+ 
+     ctrr_overlay_disable(r);
++    if (!(r->control & CTRR_READ_ONLY)) {
++        /* Enabled RW ranges retain ordinary RAM writes and SMC tracking. */
++        return;
++    }
++    memory_region_transaction_begin();
++    memory_region_set_alias_offset(&r->overlay, r->lower - s->ram_base);
+     memory_region_set_size(&r->overlay, size);
+     memory_region_add_subregion_overlap(s->system_memory, r->lower,
+                                         &r->overlay, 10);
+     r->mapped = true;
++    memory_region_transaction_commit();
+ }
+ 
+ static MemTxResult ctrr_overlay_read(void *opaque, hwaddr offset,
+                                      uint64_t *data, unsigned size,
+                                      MemTxAttrs attrs)
+ {
+-    VMAppleCtrrRange *r = opaque;
+-    VMAppleCtrrState *s = r->owner;
++    VMAppleCtrrState *s = opaque;
+     uint8_t *ram;
+     uint64_t raw = 0;
+ 
+-    if (!s->ram || size == 0 || size > 8 ||
+-        r->lower + offset < s->ram_base ||
+-        r->lower + offset + size > s->ram_base + s->ram_size) {
++    /* Fallback only if ROMD is explicitly disabled; normal reads are direct. */
++    if (size == 0 || size > 8 || offset > s->ram_size ||
++        size > s->ram_size - offset) {
+         return MEMTX_ERROR;
+     }
+     ram = memory_region_get_ram_ptr(s->ram);
+-    memcpy(&raw, ram + (r->lower - s->ram_base) + offset, size);
++    memcpy(&raw, ram + offset, size);
+     *data = le64_to_cpu(raw);
+-    trace_vmapple_ctrr_overlay_read(r->lower + offset, size, *data);
++    trace_vmapple_ctrr_overlay_read(s->ram_base + offset, size, *data);
+     return MEMTX_OK;
+ }
+ 
+@@ -137,24 +146,12 @@
+                                       uint64_t data, unsigned size,
+                                       MemTxAttrs attrs)
+ {
+-    VMAppleCtrrRange *r = opaque;
+-    VMAppleCtrrState *s = r->owner;
+-    uint8_t *ram;
+-    uint64_t raw;
+-
+-    if (r->control & CTRR_READ_ONLY) {
+-        trace_vmapple_ctrr_write_fault(r->lower + offset, size);
+-        return MEMTX_ERROR;
+-    }
+-    if (!s->ram || size == 0 || size > 8 ||
+-        r->lower + offset < s->ram_base ||
+-        r->lower + offset + size > s->ram_base + s->ram_size) {
+-        return MEMTX_ERROR;
+-    }
+-    raw = cpu_to_le64(data);
+-    ram = memory_region_get_ram_ptr(s->ram);
+-    memcpy(ram + (r->lower - s->ram_base) + offset, &raw, size);
+-    return MEMTX_OK;
++    VMAppleCtrrState *s = opaque;
++
++    /* Only READ_ONLY ranges map this ROMD leaf. Never silently discard a
++     * normal CPU/DMA write: MEMTX_ERROR is propagated to the requester. */
++    trace_vmapple_ctrr_write_fault(s->ram_base + offset, size);
++    return MEMTX_ERROR;
+ }
+ 
+ static const MemoryRegionOps ctrr_overlay_ops = {
+@@ -308,20 +305,46 @@
+     for (unsigned i = 0; i < CTRR_RANGE_COUNT; i++) {
+         VMAppleCtrrRange *r = &s->ranges[i];
+         r->owner = s;
+-        memory_region_init_io(&r->overlay, obj, &ctrr_overlay_ops, r,
+-                              "VMApple CTRR protected range", 1);
+     }
+ }
+ 
+ static void ctrr_realize(DeviceState *dev, Error **errp)
+ {
+     VMAppleCtrrState *s = VMAPPLE_CTRR(dev);
+-    if (!s->ram || !s->ram_size) {
+-        error_setg(errp, "CTRR contract model requires the VM RAM link");
++
++    s->page_size = qemu_real_host_page_size();
++    if (!s->ram || s->ram_size < s->page_size ||
++        s->ram_size > memory_region_size(s->ram) ||
++        s->ram_base > UINT64_MAX - s->ram_size) {
++        error_setg(errp, "CTRR contract model requires a contained VM RAM link");
+         return;
+     }
+-    s->page_size = qemu_real_host_page_size();
+     s->system_memory = get_system_memory();
++    if (s->views_initialized) {
++        if (s->backing_ram != s->ram) {
++            error_setg(errp, "CTRR backing RAM cannot change across realization");
++        }
++        return;
++    }
++    if (!memory_region_init_rom_device_shared(&s->read_only_ram, OBJECT(dev),
++            &ctrr_overlay_ops, s, "VMApple CTRR shared read-only RAM", s->ram,
++            errp)) {
++        return;
++    }
++    for (unsigned i = 0; i < CTRR_RANGE_COUNT; i++) {
++        memory_region_init_alias(&s->ranges[i].overlay, OBJECT(dev),
++                                 "VMApple CTRR protected range",
++                                 &s->read_only_ram, 0, 1);
++    }
++    s->backing_ram = s->ram;
++    s->views_initialized = true;
++}
++
++static void ctrr_unrealize(DeviceState *dev)
++{
++    /* Remove all mappings before device teardown. Keep the leaf and aliases
++     * alive until their owner is finalized, so old RCU views remain valid. */
++    ctrr_reset(OBJECT(dev), RESET_TYPE_COLD);
+ }
+ 
+ static const Property ctrr_properties[] = {
+@@ -337,6 +360,7 @@
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+     device_class_set_props(dc, ctrr_properties);
+     dc->realize = ctrr_realize;
++    dc->unrealize = ctrr_unrealize;
+     rc->phases.hold = ctrr_reset;
+     dc->desc = "VMApple CTRR contract device";
+ }
+diff --git a/include/system/memory.h b/include/system/memory.h
+index a7e03fc3e7..60df2f6566 100644
+--- a/include/system/memory.h
++++ b/include/system/memory.h
+@@ -1428,6 +1428,33 @@ bool memory_region_init_rom_device(MemoryRegion *mr,
+                                    uint64_t size,
+                                    Error **errp);
+ 
++/**
++ * memory_region_init_rom_device_shared: ROMD view of an existing RAM region
++ *
++ * Reads and instruction fetches use @backing's original RAMBlock and host
++ * bytes. Ordinary writes call @ops. No RAM is allocated/copied or registered
++ * for migration a second time. The backing owner is retained when distinct
++ * from @owner; finalization only releases that reference, never the RAMBlock.
++ *
++ * @backing must be an original, non-alias RAM region. Its size/lifetime must
++ * not be changed independently while the view exists. Map portions of this
++ * full-sized view with ordinary aliases. Debug/ROM-loading writes retain the
++ * standard privileged QEMU ROMD behavior; this is not a host-debug boundary.
++ *
++ * @mr: destination region
++ * @owner: object owning the view
++ * @ops: device callbacks for ordinary writes and non-ROMD reads
++ * @opaque: callback state
++ * @name: view name
++ * @backing: existing RAM region
++ * @errp: error output
++ * Return: true on success
++ */
++bool memory_region_init_rom_device_shared(MemoryRegion *mr, Object *owner,
++                                          const MemoryRegionOps *ops,
++                                          void *opaque, const char *name,
++                                          MemoryRegion *backing, Error **errp);
++
+ 
+ /**
+  * memory_region_owner: get a memory region's owner.
+diff --git a/system/memory.c b/system/memory.c
+index 264dc90c0a..9751e1b237 100644
+--- a/system/memory.c
++++ b/system/memory.c
+@@ -1182,6 +1182,14 @@ static void memory_region_destructor_ram(MemoryRegion *mr)
+     qemu_ram_free(mr->ram_block);
+ }
+ 
++static void memory_region_destructor_rom_device_shared(MemoryRegion *mr)
++{
++    MemoryRegion *backing = mr->ram_block->mr;
++
++    mr->ram_block = NULL;
++    memory_region_unref(backing);
++}
++
+ static bool memory_region_need_escape(char c)
+ {
+     return c == '/' || c == '[' || c == '\\' || c == ']';
+@@ -3635,6 +3643,34 @@ bool memory_region_init_rom_device(MemoryRegion *mr, Object *owner,
+     return false;
+ }
+ 
++bool memory_region_init_rom_device_shared(MemoryRegion *mr, Object *owner,
++                                          const MemoryRegionOps *ops,
++                                          void *opaque, const char *name,
++                                          MemoryRegion *backing, Error **errp)
++{
++    if (!backing || !memory_region_is_ram(backing) || backing->alias ||
++        !backing->ram_block || backing->ram_block->mr != backing) {
++        error_setg(errp, "Shared ROM device requires an original RAM region");
++        return false;
++    }
++    assert(ops);
++    memory_region_init_io(mr, owner, ops, opaque, name,
++                          memory_region_size(backing));
++    /*
++     * A second RAMBlock for the same host pointer would give TCG competing
++     * physical TB identities. Borrow the original block, including its dirty
++     * tracking/SMC identity, without another allocation or migration entry.
++     * Keep ram=false: ROMD reads are direct, but ordinary writes must call ops.
++     */
++    if (backing->owner != mr->owner) {
++        memory_region_ref(backing);
++        mr->destructor = memory_region_destructor_rom_device_shared;
++    }
++    mr->ram_block = backing->ram_block;
++    mr->rom_device = true;
++    return true;
++}
++
+ /*
+  * Support system builds with CONFIG_FUZZ using a weak symbol and a stub for
+  * the fuzz_dma_read_cb callback

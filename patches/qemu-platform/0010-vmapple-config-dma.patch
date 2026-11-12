@@ -1,0 +1,169 @@
+VMApple configuration DMA: map the original doorbell and normal error replies.
+
+The original 26A434 host returns ENOTSUP for operation 2 and ENOENT for
+operation 1 without optional identity data. No firmware or validation result
+is changed. DMA is restricted to writable guest RAM.
+
+diff --git a/hw/vmapple/cfg.c b/hw/vmapple/cfg.c
+--- a/hw/vmapple/cfg.c
++++ b/hw/vmapple/cfg.c
+@@ -14,12 +14,16 @@
+ #include "hw/core/sysbus.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
++#include "qemu/rcu.h"
+ #include "qapi/error.h"
+ #include "net/net.h"
++#include "system/dma.h"
++#include "trace.h"
+ 
+ OBJECT_DECLARE_SIMPLE_TYPE(VMAppleCfgState, VMAPPLE_CFG)
+ 
+-#define VMAPPLE_CFG_SIZE 0x00010000
++#define VMAPPLE_CFG_SIZE 0x00100000
++#define VMAPPLE_CFG_DMA_OFFSET (VMAPPLE_CFG_SIZE - 8)
+ 
+ typedef struct VMAppleCfg {
+     uint32_t version;         /* 0x000 */
+@@ -60,9 +64,105 @@
+     VMAppleCfg cfg;
+ 
+     MemoryRegion mem;
++    MemoryRegion dma;
+     char *serial;
+     char *model;
+     char *soc_name;
++};
++
++/* The original configuration DMA interface maps guest RAM, never MMIO.
++ * Rejecting non-RAM also prevents recursive device access via a descriptor.
++ */
++static bool vmapple_cfg_ram_range(uint64_t addr, uint64_t length)
++{
++    RCU_READ_LOCK_GUARD();
++
++    if (!length || addr > UINT64_MAX - length) {
++        return false;
++    }
++    while (length) {
++        hwaddr translated, available = length;
++        MemoryRegion *mr = address_space_translate(&address_space_memory, addr,
++            &translated, &available, true, MEMTXATTRS_UNSPECIFIED);
++
++        if (!available || !memory_region_is_ram(mr) || mr->readonly) {
++            return false;
++        }
++        addr += available;
++        length -= available;
++    }
++    return true;
++}
++
++static void vmapple_cfg_dma_write(void *opaque, hwaddr offset,
++                                  uint64_t request_addr, unsigned size)
++{
++    uint8_t request[24];
++    uint8_t type;
++    uint32_t operation;
++    uint64_t buffer, capacity, status;
++
++    if (!vmapple_cfg_ram_range(request_addr, sizeof(request)) ||
++        dma_memory_read(&address_space_memory, request_addr, request,
++                        sizeof(request), MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
++        return;
++    }
++    type = request[2];
++    if (lduw_le_p(request) != 1 || type < 1 || type > 3) {
++        return;
++    }
++    operation = ldl_le_p(request + 4);
++    buffer = ldq_le_p(request + 8);
++    capacity = ldq_le_p(request + 16);
++    trace_vmapple_cfg_dma_request(request_addr, type, operation, buffer, capacity);
++    if (!vmapple_cfg_ram_range(buffer, capacity)) {
++        return;
++    }
++
++    /* Original 26A434 AvpConfigurationRegisters treats operation 2 as
++     * unsupported. Operation 1/type 1 returns ENOENT when no optional
++     * avp_strong_identity blob is configured, as on this machine.
++     * These are normal error completions, not validation success.
++     */
++    switch (operation) {
++    case 1:
++        status = type == 1 ? 2 : 22; /* Darwin ENOENT / EINVAL */
++        break;
++    case 3:
++        if (type != 1) {
++            status = 22; /* Native ISA requests require an output buffer. */
++            break;
++        }
++        qemu_log_mask(LOG_UNIMP, "vmapple-cfg: ISA request not implemented\n");
++        return;
++    default:
++        status = 45; /* Darwin ENOTSUP, including operation 2 */
++        break;
++    }
++    /* Native completion replaces the full first word, clearing operation. */
++    stq_le_p(request, 0x01000001);
++    stq_le_p(request + 8, status);
++    stq_le_p(request + 16, 0);
++    if (dma_memory_write(&address_space_memory, request_addr, request,
++                         sizeof(request), MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
++        trace_vmapple_cfg_dma_response(operation, status, 0);
++    }
++}
++
++static uint64_t vmapple_cfg_dma_read(void *opaque, hwaddr offset, unsigned size)
++{
++    /* The original DMA slot is a doorbell, not a request-pointer register. */
++    return 0;
++}
++
++static const MemoryRegionOps vmapple_cfg_dma_ops = {
++    .read = vmapple_cfg_dma_read,
++    .write = vmapple_cfg_dma_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 8,
++    .valid.max_access_size = 8,
++    .impl.min_access_size = 8,
++    .impl.max_access_size = 8,
+ };
+ 
+ static void vmapple_cfg_reset(Object *obj, ResetType type)
+@@ -149,6 +249,10 @@
+ 
+     memory_region_init_ram(&s->mem, obj, "VMApple Config", VMAPPLE_CFG_SIZE,
+                            &error_fatal);
++    memory_region_init_io(&s->dma, obj, &vmapple_cfg_dma_ops, s,
++                          "VMApple Config DMA", 8);
++    memory_region_add_subregion_overlap(&s->mem, VMAPPLE_CFG_DMA_OFFSET,
++                                        &s->dma, 1);
+     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mem);
+ }
+ 
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -128,7 +128,7 @@
+ 
+ static const MemMapEntry memmap[] = {
+     [VMAPPLE_FIRMWARE] =           { 0x00100000, 0x00100000 },
+-    [VMAPPLE_CONFIG] =             { 0x00400000, 0x00010000 },
++    [VMAPPLE_CONFIG] =             { 0x00400000, 0x00100000 },
+ 
+     [VMAPPLE_GIC_DIST] =           { 0x10000000, 0x00010000 },
+     [VMAPPLE_GIC_REDIST] =         { 0x10010000, 0x00400000 },
+diff --git a/hw/vmapple/trace-events b/hw/vmapple/trace-events
+--- a/hw/vmapple/trace-events
++++ b/hw/vmapple/trace-events
+@@ -1,5 +1,9 @@
+ # See docs/devel/tracing.rst for syntax documentation.
+ # SPDX-License-Identifier: GPL-2.0-or-later
++
++# cfg.c
++vmapple_cfg_dma_request(uint64_t request, uint8_t type, uint32_t operation, uint64_t buffer, uint64_t capacity) "request=0x%"PRIx64" type=%u op=%u buffer=0x%"PRIx64" capacity=0x%"PRIx64
++vmapple_cfg_dma_response(uint32_t operation, uint64_t status, uint64_t size) "op=%u status=%"PRIu64" size=0x%"PRIx64
+ 
+ # aes.c
+ aes_read(uint64_t offset, uint64_t res) "offset=0x%"PRIx64" res=0x%"PRIx64

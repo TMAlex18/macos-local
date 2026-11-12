@@ -1,0 +1,162 @@
+diff --git a/hw/vmapple/bdif.c b/hw/vmapple/bdif.c
+--- a/hw/vmapple/bdif.c
++++ b/hw/vmapple/bdif.c
+@@ -175,9 +175,10 @@
+ static void vblk_cmd(uint64_t devid, BlockBackend *blk, uint64_t gp_addr,
+                      uint64_t static_off)
+ {
+-    VblkReq req;
++    VblkReq req = { 0 };
+     VblkSector sector;
+-    uint64_t off = 0;
++    uint64_t off;
++    int64_t disk_length;
+     g_autofree char *buf = NULL;
+     uint8_t ret = VBLK_RET_FAILED;
+     int r;
+@@ -186,32 +187,36 @@
+     dma_result = dma_memory_read(&address_space_memory, gp_addr,
+                                  &req, sizeof(req), MEMTXATTRS_UNSPECIFIED);
+     if (dma_result != MEMTX_OK) {
++        /* No trustworthy completion address when the descriptor is absent. */
++        return;
++    }
++    le2cpu_req(&req);
++    if (req.retval.len < 1 ||
++        !dma_memory_valid(&address_space_memory, req.retval.addr, 1,
++                          DMA_DIRECTION_FROM_DEVICE, MEMTXATTRS_UNSPECIFIED)) {
++        return;
++    }
++    if (req.sector.len != sizeof(sector) || !blk) {
+         goto out;
+     }
+-
+-    le2cpu_req(&req);
+-
+-    if (req.sector.len != sizeof(sector)) {
+-        goto out;
+-    }
+-
+-    /* Read the vblk command */
+     dma_result = dma_memory_read(&address_space_memory, req.sector.addr,
+-                                 &sector, sizeof(sector),
+-                                 MEMTXATTRS_UNSPECIFIED);
++                                 &sector, sizeof(sector), MEMTXATTRS_UNSPECIFIED);
+     if (dma_result != MEMTX_OK) {
+         goto out;
+     }
+     le2cpu_sector(&sector);
+-
+-    off = sector.sector * 512ULL + static_off;
+-
+-    /* Sanity check that we're not allocating bogus sizes */
+-    if (req.data.len > 128 * MiB) {
++    off = sector.sector * 512ULL;
++    if (static_off > INT64_MAX || off > INT64_MAX - static_off ||
++        req.data.len > 128 * MiB) {
+         goto out;
+     }
+-
+-    buf = g_malloc0(req.data.len);
++    off += static_off;
++    disk_length = blk_getlength(blk);
++    if (disk_length < 0 || off > disk_length ||
++        req.data.len > (uint64_t)disk_length - off) {
++        goto out;
++    }
++    buf = g_malloc0(MAX(req.data.len, 1));
+     switch (req.data.flags) {
+     case VBLK_DATA_FLAGS_READ:
+         r = blk_pread(blk, off, req.data.len, buf, 0);
+@@ -227,12 +232,31 @@
+         }
+         break;
+     case VBLK_DATA_FLAGS_WRITE:
+-        /* Not needed, iBoot only reads */
++        if (!blk_is_writable(blk)) {
++            goto out;
++        }
++        /* Original Stage1 writes its AUX state; the old read-only model
++         * reported failure even on a valid guest-owned writable backend. */
++        dma_result = dma_memory_read(&address_space_memory, req.data.addr, buf,
++                                     req.data.len, MEMTXATTRS_UNSPECIFIED);
++        if (dma_result != MEMTX_OK) {
++            goto out;
++        }
++        r = blk_pwrite(blk, off, req.data.len, buf, 0);
++        if (r == 0) {
++            /* No separate guest flush command is modeled yet. Prefer
++             * durable completion over throughput for this bring-up path. */
++            r = blk_flush(blk);
++        }
++        trace_bdif_vblk_write(devid == DEVID_AUX ? "aux" : "root",
++                              req.data.addr, off, req.data.len, r);
++        if (r == 0) {
++            ret = VBLK_RET_SUCCESS;
++        }
+         break;
+     default:
+         break;
+     }
+-
+ out:
+     dma_memory_write(&address_space_memory, req.retval.addr, &ret, 1,
+                      MEMTXATTRS_UNSPECIFIED);
+@@ -403,12 +427,17 @@
+     desc.len = le32_to_cpu(desc.len);
+     desc.next = le16_to_cpu(desc.next);
+     desc.flags = le16_to_cpu(desc.flags);
++    trace_bdif_usb_descriptor(s->usb_queue, desc.addr, desc.len,
++                              desc.next, desc.flags);
+     if (s->usb_queue == 0) {
+-        if (desc.len > VUSB_MAX_PACKET || s->usb_rx_posted) {
++        /* Receive capacity is not incoming wire length. Real Stage1
++         * posts a >1MiB buffer for smaller EP0 messages. Wire frames
++         * remain bounded by VUSB_MAX_PACKET in the receiver. */
++        if (s->usb_rx_posted) {
+             return;
+         }
+         s->usb_rx_addr = desc.addr;
+-        s->usb_rx_len = desc.len;
++        s->usb_rx_len = MIN(desc.len, VUSB_MAX_PACKET);
+         s->usb_rx_posted = true;
+         vusb_try_deliver(s);
+         qemu_chr_fe_accept_input(&s->usbdev);
+@@ -507,6 +536,25 @@
+ static void bdif_realize(DeviceState *dev, Error **errp)
+ {
+     VMAppleBdifState *s = VMAPPLE_BDIF(dev);
++    BlockBackend *backends[] = { s->aux, s->root };
++
++    /* Request the permissions that the emulated device actually uses.
++     * Respect a read-only backend and retain its existing sharing contract. */
++    for (size_t i = 0; i < ARRAY_SIZE(backends); i++) {
++        BlockBackend *blk = backends[i];
++        uint64_t perm, shared_perm;
++        if (!blk) {
++            continue;
++        }
++        blk_get_perm(blk, &perm, &shared_perm);
++        perm |= BLK_PERM_CONSISTENT_READ;
++        if (blk_supports_write_perm(blk)) {
++            perm |= BLK_PERM_WRITE;
++        }
++        if (blk_set_perm(blk, perm, shared_perm, errp) < 0) {
++            return;
++        }
++    }
+ 
+     if (qemu_chr_fe_backend_connected(&s->usbdev)) {
+         qemu_chr_fe_set_handlers(&s->usbdev, vusb_can_receive, vusb_receive,
+diff --git a/hw/vmapple/trace-events b/hw/vmapple/trace-events
+--- a/hw/vmapple/trace-events
++++ b/hw/vmapple/trace-events
+@@ -19,5 +19,8 @@
+ bdif_read(uint64_t offset, uint32_t size, uint64_t value) "offset=0x%"PRIx64" size=0x%x value=0x%"PRIx64
+ bdif_write(uint64_t offset, uint32_t size, uint64_t value) "offset=0x%"PRIx64" size=0x%x value=0x%"PRIx64
+ bdif_vblk_read(const char *dev, uint64_t addr, uint64_t offset, uint32_t len, int r) "dev=%s addr=0x%"PRIx64" off=0x%"PRIx64" size=0x%x r=%d"
++bdif_vblk_write(const char *dev, uint64_t addr, uint64_t offset, uint32_t len, int r) "dev=%s addr=0x%"PRIx64" off=0x%"PRIx64" size=0x%x r=%d"
+ bdif_usb_cmd(uint64_t addr, int dma_result) "addr=0x%"PRIx64" dma_result=%d"
+ bdif_usb_word(uint32_t offset, uint64_t value) "offset=0x%x value=0x%"PRIx64
++
++bdif_usb_descriptor(uint32_t queue, uint64_t addr, uint32_t len, uint16_t next, uint16_t flags) "queue=%u addr=0x%"PRIx64" capacity=0x%x next=%u flags=0x%x"

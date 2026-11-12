@@ -1,0 +1,415 @@
+{
+  "recorded_at": "2026-10-14T06:51:02.138740+00:00",
+  "phase": "M1_in_progress",
+  "scope": "24MHz counter/deadline accuracy in isolated opt-in QEMU TCG branch",
+  "upstream_pin": "1a72df984914fb9929d35b1217619178133d65a4",
+  "source_worktree": "sources/qemu-clock-exact",
+  "binary": "build/qemu-clock-exact/qemu-system-aarch64",
+  "patches": [
+    "patches/qemu-platform/0003-vmapple-tcg-pac-model-stack.patch",
+    "patches/qemu-platform/0005-exact-counter-deadline-clock.patch"
+  ],
+  "exact_patch_sha256": "c195d53b9e20a60679c21d71a2502453a2b78f762787202b40a80d91f73840cb",
+  "activation": "-cpu max,cntfrq=24000000,x-cntfrq-exact=on",
+  "default_enabled": false,
+  "mainline_defaults_changed": false,
+  "host_clock_modified": false,
+  "apple_device_tree_modified": false,
+  "arithmetic": {
+    "passed": true,
+    "conversion_vectors": 387527,
+    "event_vectors": 1920,
+    "oracle": "independent 128-bit arithmetic / enumerated transitions",
+    "sanitizers": "native helper test only: ASan + UBSan",
+    "log": "runs/e06-clock-exact-arithmetic.log"
+  },
+  "functional": {
+    "passed": true,
+    "cases": [
+      {
+        "case": "timer-legacy24",
+        "freq_hz": 24000000,
+        "exact": false,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "fb55827dbb9bc3e4d2462690b71f0b668edacf19494b049588eedff1614c3d4d",
+        "log": "runs/clock-exact-timer-legacy24.log",
+        "uart": "E06 TIMER BEGIN\nCNTFRQ=0x00000000016e3600\nGICD_RESET_CTLR=0x0000000000000050\nMASKED_TIMER_PENDING_PASS\nGIC_PPI27_IRQ_ERET_PASS\nIRQ_COUNT=0x0000000000000002\nLAST_INTID=0x000000000000001b\nE06 TIMER GIC WFI REARM PASS\n"
+      },
+      {
+        "case": "timer-exact24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "fb55827dbb9bc3e4d2462690b71f0b668edacf19494b049588eedff1614c3d4d",
+        "log": "runs/clock-exact-timer-exact24.log",
+        "uart": "E06 TIMER BEGIN\nCNTFRQ=0x00000000016e3600\nGICD_RESET_CTLR=0x0000000000000050\nMASKED_TIMER_PENDING_PASS\nGIC_PPI27_IRQ_ERET_PASS\nIRQ_COUNT=0x0000000000000002\nLAST_INTID=0x000000000000001b\nE06 TIMER GIC WFI REARM PASS\n"
+      },
+      {
+        "case": "combined-exact24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "ffb4387d562313b40ebde4ad46c2cc2c815c1fadf6d753b46819d464ed0f76ff",
+        "log": "runs/clock-exact-combined-exact24.log",
+        "uart": "E06 MMU16K BEGIN\nID_AA64MMFR0=0x2100032310201126\nTCR_EL1=0x0000000000a0b520\nMMU16K_ALIAS_RW_PASS\nFAULT_ESR=0x000000009600004f\nFAULT_FAR=0x00000000a0004000\nFAULT_ELR=0x0000000000101224\nMMU16K_RO_STORE_ABORT_PASS\nFAULT_ESR=0x0000000096000007\nFAULT_FAR=0x00000000a0008000\nFAULT_ELR=0x000000000010121c\nMMU16K_UNMAPPED_ABORT_PASS\nFAULT_ESR=0x000000009600000b\nFAULT_FAR=0x00000000a000c000\nFAULT_ELR=0x000000000010121c\nMMU16K_ACCESS_FLAG_ABORT_REPAIR_PASS\nDATA_ABORT_COUNT=0x0000000000000003\nMMU16K_BBM_TLBI_REMAP_PASS\nE06 MMU16K PERMISSION TRANSLATION TLBI PASS\nE06 TIMER BEGIN\nCNTFRQ=0x00000000016e3600\nGICD_RESET_CTLR=0x0000000000000050\nMASKED_TIMER_PENDING_PASS\nGIC_PPI27_IRQ_ERET_PASS\nIRQ_COUNT=0x0000000000000002\nLAST_INTID=0x000000000000001b\nE06 TIMER GIC WFI REARM PASS\nE06 MMU TIMER INTEGRATED PASS\n"
+      },
+      {
+        "case": "disabled-ppi24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 1,
+        "expected_exit": 1,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "bc1211d185ecd6a8a8382b6ec4343d00aa2e16a79d0f482b6d0b3b8c48007908",
+        "log": "runs/clock-exact-disabled-ppi24.log",
+        "uart": "E06 TIMER BEGIN\nCNTFRQ=0x00000000016e3600\nGICD_RESET_CTLR=0x0000000000000050\nMASKED_TIMER_PENDING_PASS\nPPI_DISABLED_NO_IRQ_EXPECTED\n"
+      },
+      {
+        "case": "writable-page24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 1,
+        "expected_exit": 1,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "57c5ab77f2978cdfd4e0cd2add97a7b3c2ab07d48e01ecf6060f989dd3482df8",
+        "log": "runs/clock-exact-writable-page24.log",
+        "uart": "E06 MMU16K BEGIN\nID_AA64MMFR0=0x2100032310201126\nTCR_EL1=0x0000000000a0b520\nMMU16K_ALIAS_RW_PASS\nFAIL: MISSING_EXPECTED_PERMISSION_FAULT\n"
+      },
+      {
+        "case": "wait-exact24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "7d7dbb3ef7d073107dced6490d510ec675eee4f03788fbf4bd9627b873cd35fc",
+        "log": "runs/clock-exact-wait-exact24.log",
+        "uart": "WFIT_EXACT_DEADLINE_PASS\nWFET_EXACT_DEADLINE_PASS\nWFXT_PAST_DEADLINE_PASS\nWFET_EVENT_BEATS_TIMEOUT_PASS\nWFE_EVENT_FALLING_EDGE_PASS\nEXACT_CLOCK_WAIT_SUITE_PASS\n"
+      },
+      {
+        "case": "wait-exact1g",
+        "freq_hz": 1000000000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "7d7dbb3ef7d073107dced6490d510ec675eee4f03788fbf4bd9627b873cd35fc",
+        "log": "runs/clock-exact-wait-exact1g.log",
+        "uart": "WFIT_EXACT_DEADLINE_PASS\nWFET_EXACT_DEADLINE_PASS\nWFXT_PAST_DEADLINE_PASS\nWFET_EVENT_BEATS_TIMEOUT_PASS\nWFE_EVENT_FALLING_EDGE_PASS\nEXACT_CLOCK_WAIT_SUITE_PASS\n"
+      },
+      {
+        "case": "wait-exact192",
+        "freq_hz": 19200000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "7d7dbb3ef7d073107dced6490d510ec675eee4f03788fbf4bd9627b873cd35fc",
+        "log": "runs/clock-exact-wait-exact192.log",
+        "uart": "WFIT_EXACT_DEADLINE_PASS\nWFET_EXACT_DEADLINE_PASS\nWFXT_PAST_DEADLINE_PASS\nWFET_EVENT_BEATS_TIMEOUT_PASS\nWFE_EVENT_FALLING_EDGE_PASS\nEXACT_CLOCK_WAIT_SUITE_PASS\n"
+      },
+      {
+        "case": "disabled-event24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 1,
+        "expected_exit": 1,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "f29df477c86a5d4f29f3cb3e4d7ee3a9ce284f0d4828216a7c2598d2c1a3cfd4",
+        "log": "runs/clock-exact-disabled-event24.log",
+        "uart": "WFIT_EXACT_DEADLINE_PASS\nWFET_EXACT_DEADLINE_PASS\nWFXT_PAST_DEADLINE_PASS\nEVENT_DISABLED_TIMEOUT_EXPECTED\n"
+      },
+      {
+        "case": "stress-exact24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "0b103c3b17506be50d30d7206f932e8af30719688afb7744573bfd08e506fee6",
+        "log": "runs/clock-exact-stress-exact24.log",
+        "uart": "GICD_RESET_CTLR=0x0000000000000050\nIRQ_COUNT=0x0000000000000060\nEXACT_CLOCK_TIMER_STRESS_PASS\n"
+      },
+      {
+        "case": "stress-exact1g",
+        "freq_hz": 1000000000,
+        "exact": true,
+        "guest_or_startup_exit": 0,
+        "expected_exit": 0,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "0b103c3b17506be50d30d7206f932e8af30719688afb7744573bfd08e506fee6",
+        "log": "runs/clock-exact-stress-exact1g.log",
+        "uart": "GICD_RESET_CTLR=0x0000000000000050\nIRQ_COUNT=0x0000000000000060\nEXACT_CLOCK_TIMER_STRESS_PASS\n"
+      },
+      {
+        "case": "frequency-guard",
+        "freq_hz": 1000000001,
+        "exact": true,
+        "guest_or_startup_exit": 1,
+        "expected_exit": 1,
+        "host_timeout": false,
+        "passed": true,
+        "firmware_sha256": "fb55827dbb9bc3e4d2462690b71f0b668edacf19494b049588eedff1614c3d4d",
+        "log": "runs/clock-exact-frequency-guard.log",
+        "uart": ""
+      }
+    ],
+    "positive_cases": 8,
+    "guest_negative_cases": 3,
+    "startup_rejection_cases": 1,
+    "log": "runs/e06-clock-exact-functional-all.json"
+  },
+  "rate": {
+    "time_utc": "2026-10-14T06:48:05.670232+00:00",
+    "binary": "build/qemu-clock-exact/qemu-system-aarch64",
+    "same_binary_off_on": true,
+    "firmware_source": "experiments/E06-platform-contracts/clock.c",
+    "series": [
+      {
+        "case": "legacy24",
+        "freq_hz": 24000000,
+        "exact": false,
+        "samples": [
+          {
+            "trial": 0,
+            "ticks": 18000000,
+            "reported_hz": 24000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.738099521,
+            "ratio": 1.0161231360560659,
+            "log": "runs/clock-rate-legacy24-0.log"
+          },
+          {
+            "trial": 1,
+            "ticks": 18000000,
+            "reported_hz": 24000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.738077026,
+            "ratio": 1.0161541053033671,
+            "log": "runs/clock-rate-legacy24-1.log"
+          },
+          {
+            "trial": 2,
+            "ticks": 18000000,
+            "reported_hz": 24000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.73809026,
+            "ratio": 1.0161358856029343,
+            "log": "runs/clock-rate-legacy24-2.log"
+          }
+        ],
+        "median_ratio": 1.0161358856029343
+      },
+      {
+        "case": "exact24",
+        "freq_hz": 24000000,
+        "exact": true,
+        "samples": [
+          {
+            "trial": 0,
+            "ticks": 18000000,
+            "reported_hz": 24000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.750051873,
+            "ratio": 0.9999308407833281,
+            "log": "runs/clock-rate-exact24-0.log"
+          },
+          {
+            "trial": 1,
+            "ticks": 18000000,
+            "reported_hz": 24000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.75011763,
+            "ratio": 0.9998431845949282,
+            "log": "runs/clock-rate-exact24-1.log"
+          },
+          {
+            "trial": 2,
+            "ticks": 18000000,
+            "reported_hz": 24000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.750168054,
+            "ratio": 0.9997759781970135,
+            "log": "runs/clock-rate-exact24-2.log"
+          }
+        ],
+        "median_ratio": 0.9998431845949282
+      },
+      {
+        "case": "legacy1g",
+        "freq_hz": 1000000000,
+        "exact": false,
+        "samples": [
+          {
+            "trial": 0,
+            "ticks": 750000030,
+            "reported_hz": 1000000000,
+            "guest_seconds": 0.75000003,
+            "host_seconds": 0.750181375,
+            "ratio": 0.999758265126217,
+            "log": "runs/clock-rate-legacy1g-0.log"
+          },
+          {
+            "trial": 1,
+            "ticks": 750000033,
+            "reported_hz": 1000000000,
+            "guest_seconds": 0.750000033,
+            "host_seconds": 0.750118158,
+            "ratio": 0.9998425248092714,
+            "log": "runs/clock-rate-legacy1g-1.log"
+          },
+          {
+            "trial": 2,
+            "ticks": 750000023,
+            "reported_hz": 1000000000,
+            "guest_seconds": 0.750000023,
+            "host_seconds": 0.750162111,
+            "ratio": 0.9997839293699012,
+            "log": "runs/clock-rate-legacy1g-2.log"
+          }
+        ],
+        "median_ratio": 0.9997839293699012
+      },
+      {
+        "case": "exact1g",
+        "freq_hz": 1000000000,
+        "exact": true,
+        "samples": [
+          {
+            "trial": 0,
+            "ticks": 750000022,
+            "reported_hz": 1000000000,
+            "guest_seconds": 0.750000022,
+            "host_seconds": 0.75008777,
+            "ratio": 0.9998830163568725,
+            "log": "runs/clock-rate-exact1g-0.log"
+          },
+          {
+            "trial": 1,
+            "ticks": 750000033,
+            "reported_hz": 1000000000,
+            "guest_seconds": 0.750000033,
+            "host_seconds": 0.750077478,
+            "ratio": 0.9998967506660691,
+            "log": "runs/clock-rate-exact1g-1.log"
+          },
+          {
+            "trial": 2,
+            "ticks": 750000016,
+            "reported_hz": 1000000000,
+            "guest_seconds": 0.750000016,
+            "host_seconds": 0.750051776,
+            "ratio": 0.9999309914306503,
+            "log": "runs/clock-rate-exact1g-2.log"
+          }
+        ],
+        "median_ratio": 0.9998967506660691
+      },
+      {
+        "case": "exact25",
+        "freq_hz": 25000000,
+        "exact": true,
+        "samples": [
+          {
+            "trial": 0,
+            "ticks": 18750000,
+            "reported_hz": 25000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.750157657,
+            "ratio": 0.9997898348453437,
+            "log": "runs/clock-rate-exact25-0.log"
+          },
+          {
+            "trial": 1,
+            "ticks": 18750000,
+            "reported_hz": 25000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.750198807,
+            "ratio": 0.9997349942466651,
+            "log": "runs/clock-rate-exact25-1.log"
+          },
+          {
+            "trial": 2,
+            "ticks": 18750000,
+            "reported_hz": 25000000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.75009468,
+            "ratio": 0.999873775934526,
+            "log": "runs/clock-rate-exact25-2.log"
+          }
+        ],
+        "median_ratio": 0.9997898348453437
+      },
+      {
+        "case": "exact192",
+        "freq_hz": 19200000,
+        "exact": true,
+        "samples": [
+          {
+            "trial": 0,
+            "ticks": 14400000,
+            "reported_hz": 19200000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.750063901,
+            "ratio": 0.9999148059253155,
+            "log": "runs/clock-rate-exact192-0.log"
+          },
+          {
+            "trial": 1,
+            "ticks": 14400000,
+            "reported_hz": 19200000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.750175536,
+            "ratio": 0.9997660067656485,
+            "log": "runs/clock-rate-exact192-1.log"
+          },
+          {
+            "trial": 2,
+            "ticks": 14400000,
+            "reported_hz": 19200000,
+            "guest_seconds": 0.75,
+            "host_seconds": 0.75007727,
+            "ratio": 0.9998969839467339,
+            "log": "runs/clock-rate-exact192-2.log"
+          }
+        ],
+        "median_ratio": 0.9998969839467339
+      }
+    ],
+    "checks": {
+      "legacy_24mhz_drift_reproduced": true,
+      "exact_24mhz_drift_below_half_percent": true,
+      "exact_improves_over_legacy": true,
+      "1g_controls_below_half_percent": true,
+      "other_exact_frequencies_below_half_percent": true
+    },
+    "passed": true,
+    "limits": "Three 750ms samples/profile; host UART observation jitter. No ppm guarantee, no macOS execution, no performance SLO."
+  },
+  "macos_booted": false,
+  "apple_code_executed": false,
+  "limits": [
+    "single-vCPU timer tests",
+    "no KVM/migration/dynamic frequency validation",
+    "host UART observation is not precision metrology",
+    "no Apple firmware, OS, GPU workload or native-performance validation"
+  ],
+  "documentation": "docs/reports/M1-EXACT-CLOCK-RESULTS.md"
+}

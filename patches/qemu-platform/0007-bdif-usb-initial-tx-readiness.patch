@@ -1,0 +1,25 @@
+diff --git a/hw/vmapple/bdif.c b/hw/vmapple/bdif.c
+--- a/hw/vmapple/bdif.c
++++ b/hw/vmapple/bdif.c
+@@ -364,6 +364,13 @@
+     if (event == CHR_EVENT_CLOSED || event == CHR_EVENT_OPENED) {
+         /* Never splice a partial frame from one connection into the next. */
+         vusb_clear(s);
++        /* AVPBooter polls the transmit queue before posting its first
++         * descriptor. An open, empty queue must initially accept work;
++         * after a descriptor is posted, flush completion still controls
++         * readiness. Closed peers and rejected sends remain not-ready. */
++        if (event == CHR_EVENT_OPENED) {
++            s->usb_tx_ready = true;
++        }
+     }
+ }
+ 
+@@ -491,6 +498,7 @@
+ {
+     VMAppleBdifState *s = VMAPPLE_BDIF(obj);
+     vusb_clear(s);
++    s->usb_tx_ready = qemu_chr_fe_backend_open(&s->usbdev);
+ }
+ 
+ static const Property bdif_properties[] = {

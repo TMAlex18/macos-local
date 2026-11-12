@@ -1,0 +1,281 @@
+{
+  "recorded_at": "2026-10-14T06:30:12.705399+00:00",
+  "source_baseline_commit": "ade0657",
+  "project_root": "/workspace/macos-local",
+  "phase": "M1_in_progress",
+  "qemu_implementation_modified": true,
+  "reims_rust_implementation_modified": false,
+  "baseline": {
+    "time": "2026-10-14T06:24:32.473118+00:00",
+    "scope": "architectural PAC and observed unsupported Apple HVC; not Apple cipher equivalence",
+    "cases": [
+      {
+        "target": "headless",
+        "guest_exit": 0,
+        "passed": true,
+        "log": "runs/e06-pauth-hvc-headless-baseline.log"
+      },
+      {
+        "target": "reims",
+        "guest_exit": 0,
+        "passed": true,
+        "log": "runs/e06-pauth-hvc-reims-baseline.log"
+      }
+    ],
+    "passed": true
+  },
+  "opt_in_model": {
+    "time": "2026-10-14T06:24:33.373357+00:00",
+    "passed": true,
+    "guest_exit": 0,
+    "vcpus": 2,
+    "model": "opt-in HMAC-SHA256 key-state reference; CPU PAC explicitly QARMA5",
+    "pac_algorithm": "QARMA5",
+    "baseline_default_max_is_noncryptographic": true,
+    "apple_bitwise_crypto_equivalence": false,
+    "apple_firmware_or_kernel_executed": false,
+    "checks": [
+      "HVC initial/defaults/rekey",
+      "PAC rejection after key change",
+      "EL0/EL1 key diversifier transitions",
+      "EL0 HVC denial",
+      "unknown/invalid call no mutation",
+      "two CPU isolation and defaults",
+      "CPU_OFF/ON state reset"
+    ],
+    "log": "runs/e06-pauth-hvc-model.log",
+    "command": [
+      "/workspace/macos-local/build/qemu-reims-arm16k/qemu-system-aarch64",
+      "-object",
+      "memory-backend-memfd,id=ram,size=512M,share=on",
+      "-M",
+      "vmapple,memory-backend=ram,x-pac-software-model=on",
+      "-m",
+      "512M",
+      "-smp",
+      "2",
+      "-cpu",
+      "max,pauth-qarma5=on",
+      "-accel",
+      "tcg",
+      "-nodefaults",
+      "-nic",
+      "none",
+      "-display",
+      "none",
+      "-nographic",
+      "-monitor",
+      "none",
+      "-serial",
+      "stdio",
+      "-semihosting-config",
+      "enable=on,target=native",
+      "-bios",
+      "/workspace/macos-local/build/e06-pauth-hvc/model/model.bin",
+      "-drive",
+      "file=/workspace/macos-local/build/e06-pauth-hvc/model/aux.raw,format=raw,if=pflash,index=0",
+      "-drive",
+      "file=/workspace/macos-local/build/e06-pauth-hvc/model/root.raw,format=raw,if=pflash,index=1"
+    ]
+  },
+  "negative_configuration_controls": [
+    {
+      "case": "no-pauth",
+      "passed": true,
+      "process_exit": 1,
+      "expected_exit": 1,
+      "log": "runs/e06-pauth-model-no-pauth.log"
+    },
+    {
+      "case": "migration-refused",
+      "passed": true,
+      "process_exit": 1,
+      "expected_exit": 1,
+      "log": "runs/e06-pauth-model-migration-refused.log"
+    },
+    {
+      "case": "model-off",
+      "passed": true,
+      "process_exit": 1,
+      "expected_exit": 1,
+      "log": "runs/e06-pauth-model-model-off.log"
+    }
+  ],
+  "scenario_summary": {
+    "baseline_runs_passed": 2,
+    "model_multicpu_run_passed": 1,
+    "negative_control_runs_matched": 3,
+    "core_rust_suites_repeated_this_step": false,
+    "unchanged_previous_core_counts": {
+      "arm16k": 2294,
+      "x86": 2300
+    }
+  },
+  "regressions": {
+    "platform_contracts_expectations_met": 10,
+    "guest_fifo_roundtrip": true,
+    "reims_arm16k_existing_smoke": "passed; runs/e06-pauth-post-model-integrated-smoke.log",
+    "qemu_4k_control_rebuilt": true
+  },
+  "implementation": {
+    "switch": "x-pac-software-model",
+    "default_enabled": false,
+    "execution": "TCG",
+    "test_cpu": "max,pauth-qarma5=on",
+    "hvc_functions": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      240
+    ],
+    "key_derivation": "per-VM random secret, role-separated HMAC-SHA256 to128-bit key banks; local model choice",
+    "patch": "patches/qemu-platform/0003-vmapple-tcg-pac-model-stack.patch",
+    "patch_is_cumulative_replacing_0002": true,
+    "migration_supported": false,
+    "preinit_error_minus3_and_invalid_flag_minus2": "model conventions, not proved Apple error ABI",
+    "apple_cipher_or_kdf_equivalence": false,
+    "macos27_abi_compatibility_proven": false
+  },
+  "patch_reconstruction": {
+    "reims_changed_files": 14,
+    "qemu_changed_files": 6,
+    "passed": true,
+    "clean_host_full_build": false
+  },
+  "restore_transport_audit": {
+    "time_utc": "2026-10-14T06:23:03.687305+00:00",
+    "scope": "source-level Linux restore transport audit; no Apple booter or installed image supplied",
+    "local_bdif": {
+      "path": "sources/qemu-reims-arm/hw/vmapple/bdif.c",
+      "upstream_pin": "1a72df984914fb9929d35b1217619178133d65a4",
+      "usb_defined_but_not_handled": true,
+      "anchors": [
+        {
+          "line": 39,
+          "code": "#define DEVID_USB           0x00100000"
+        },
+        {
+          "line": 104,
+          "code": "case DEVID_ROOT:"
+        },
+        {
+          "line": 107,
+          "code": "case DEVID_AUX:"
+        },
+        {
+          "line": 214,
+          "code": "case DEVID_ROOT:"
+        },
+        {
+          "line": 217,
+          "code": "case DEVID_AUX:"
+        }
+      ]
+    },
+    "candidate_transport": {
+      "repository": "steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64",
+      "revision": "657bb2423ec8d572b22a97dd33563dbba1680e6a",
+      "patch": "patches/vmapple-usb-chardev.patch",
+      "dry_apply_check_exit": 0,
+      "applied_to_project": false,
+      "runtime_tested_here": false,
+      "reported_scope": "Author reports DFU transfers on Apple Silicon/Asahi; journal does not establish a completed Linux restore"
+    },
+    "material_state": {
+      "avpbooter_present": false,
+      "restored_aux_present": false,
+      "restored_root_disk_present": false,
+      "matching_machine_identity_present": false
+    },
+    "routes": [
+      {
+        "name": "Apple reference provisioning",
+        "state": "documented upstream; no reference Mac required/assumed available in this project"
+      },
+      {
+        "name": "official OS image extraction",
+        "state": "candidate; ipsw tooling documents filesystem/AEA inspection; actual AVPBooter nested path/payload not located or extracted"
+      },
+      {
+        "name": "Linux-native signed restore",
+        "state": "requires actual boot firmware + BDIF USB/USBIP + recovery transport + matched signed restore; current local BDIF lacks USB path"
+      }
+    ],
+    "not_done": [
+      "No full IPSW downloaded",
+      "No boot firmware extracted/executed",
+      "No restore signing bypass",
+      "No USBIP kernel attachment",
+      "No third-party patch applied"
+    ]
+  },
+  "other_uncommitted_work_observed": {
+    "source_files_preserved_not_committed_by_this_step": [
+      "experiments/E05-boot/audit-device-tree.py",
+      "experiments/E05-boot/extract-small-boot-components.py",
+      "experiments/E06-platform-contracts/clock.c",
+      "experiments/E06-platform-contracts/run-clock.py"
+    ],
+    "private_component_observation": {
+      "files": [
+        {
+          "path": "private/official-restore-research/27.0.1-26A434/DeviceTree.vma2macosap.im4p",
+          "bytes": 6585,
+          "matches_existing_audit_hash": true
+        },
+        {
+          "path": "private/official-restore-research/27.0.1-26A434/LLB.vma2.RELEASE.im4p",
+          "bytes": 347470,
+          "matches_existing_audit_hash": true
+        },
+        {
+          "path": "private/official-restore-research/27.0.1-26A434/iBoot.vma2.RELEASE.im4p",
+          "bytes": 412194,
+          "matches_existing_audit_hash": true
+        },
+        {
+          "path": "private/official-restore-research/27.0.1-26A434/iBEC.vma2.RELEASE.im4p",
+          "bytes": 412194,
+          "matches_existing_audit_hash": true
+        },
+        {
+          "path": "private/official-restore-research/27.0.1-26A434/iBSS.vma2.RELEASE.im4p",
+          "bytes": 347470,
+          "matches_existing_audit_hash": true
+        }
+      ],
+      "extraction_performed_by_this_check": false,
+      "apple_code_executed_by_this_check": false,
+      "independent_apple_signature_verification": false
+    },
+    "read_only_existing_reports": [
+      "runs/e05-source-audit/im4p-small-firmware-audit.json",
+      "runs/e05-source-audit/27-vmapple-dtree-contracts.json",
+      "runs/e06-contracts-clock-rate.json"
+    ],
+    "device_tree_report_timebase_hz": 24000000,
+    "clock_report_24mhz_guest_over_host_median": 1.0160773374904282,
+    "these_uncommitted_experiments_rerun_by_this_step": false,
+    "notes": "Observed reports and existing private files; preserve separately rather than claiming ownership or a verified clock fix."
+  },
+  "product_state": {
+    "macos_booted": false,
+    "apple_boot_code_execution_verified": false,
+    "guest_gpu_draw_compute_tested": false,
+    "full_ipsw_present": false,
+    "complete_boot_bundle": null,
+    "avpbooter_present": false,
+    "small_apple_components_present": true,
+    "present_components_authenticated_with_apple_signature": false
+  },
+  "next_actions": [
+    "Review the existing uncommitted DeviceTree/clock experiment and validate timing contract independently",
+    "Acquire or construct matched AVPBooter/init chain, then validate missing BDIF USB transport",
+    "Validate HVC model with target OS behavior before enabling any compatibility claim",
+    "EL0+MMU+PAC composition, multi-vCPU address spaces and real guest GPU work remain"
+  ]
+}

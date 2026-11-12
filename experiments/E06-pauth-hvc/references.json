@@ -1,0 +1,59 @@
+{
+  "xnu_header": {
+    "repo": "apple-oss-distributions/xnu",
+    "commit": "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea",
+    "commit_date": "2025-10-16T22:36:30Z",
+    "fetched_utc": "2026-10-14T06:19:37.830483+00:00",
+    "files": [
+      {
+        "source_path": "osfmk/arm64/hv_hvc.h",
+        "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/arm64/hv_hvc.h",
+        "local": "runs/e06-pac-sources/xnu-current-osfmk_arm64_hv_hvc.h",
+        "sha256": "3c6c9ffeb665af758d2973671c2128a49d98cba8636dc611bf1423b6ddc642a2",
+        "bytes": 3187
+      }
+    ]
+  },
+  "legacy_semantics": {
+    "url": "https://github.com/matteyeux/darwin-xnu/blob/master/doc/vmapple_pac.md",
+    "sha256": "003e19ec9b64f9320f80075b193ffb1a1beb89e256327aa47cc6724a4646b54e",
+    "provenance": "mirror only; official checked main/tag prose doc was missing; IDs separately confirmed with official header"
+  },
+  "qemu_pauth_algorithms": {
+    "url": "https://www.qemu.org/docs/master/system/arm/cpu-features.html#tcg-vcpu-features",
+    "finding": "impdef non-cryptographic; qarma5 explicitly selected for new model tests"
+  },
+  "linux_restore_candidate": {
+    "repo": "steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64",
+    "commit": "657bb2423ec8d572b22a97dd33563dbba1680e6a",
+    "commit_date": "2026-08-18T06:52:20Z",
+    "fetched_utc": "2026-10-14T06:19:39.483051+00:00",
+    "files": [
+      {
+        "source_path": "README.md",
+        "url": "https://raw.githubusercontent.com/steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64/657bb2423ec8d572b22a97dd33563dbba1680e6a/README.md",
+        "local": "runs/e06-pac-sources/asahi-restore-README.md",
+        "sha256": "f98a16998c7ee18542047c8f17bf666e48bf5ff56e13a594a5385bacf2ccf1d7",
+        "bytes": 8844
+      },
+      {
+        "source_path": "patches/vmapple-usb-chardev.patch",
+        "url": "https://raw.githubusercontent.com/steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64/657bb2423ec8d572b22a97dd33563dbba1680e6a/patches/vmapple-usb-chardev.patch",
+        "local": "runs/e06-pac-sources/asahi-restore-patches_vmapple-usb-chardev.patch",
+        "sha256": "a336748e9531dd594a22c36d23996340e966b19f2ff00580eeebd4bad1a0f717",
+        "bytes": 9294
+      },
+      {
+        "source_path": "scripts/vmapple-usbip.py",
+        "url": "https://raw.githubusercontent.com/steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64/657bb2423ec8d572b22a97dd33563dbba1680e6a/scripts/vmapple-usbip.py",
+        "local": "runs/e06-pac-sources/asahi-restore-scripts_vmapple-usbip.py",
+        "sha256": "41a773ff8aebfee5f31f7ec6a1a522aa79bac493ba527d3ae45857940b2d3979",
+        "bytes": 11091
+      }
+    ]
+  },
+  "ipsw_filesystem_inspection_candidate": {
+    "url": "https://blacktop.github.io/ipsw/docs/guides/aea/",
+    "status": "tool documentation only; no payload extraction tested here"
+  }
+}

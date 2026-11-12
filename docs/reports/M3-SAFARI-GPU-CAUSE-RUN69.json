@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "run": "m3-safari-gpu-cause-qarma5-20261101-69",
+  "status": "completed_guest_shutdown_observed",
+  "report": "docs/reports/M3-SAFARI-GPU-CAUSE-RUN69.md",
+  "raw_report": "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/results.json",
+  "resumed_by_user": "2026-11-01: \"try to find it out now\"",
+  "started_at_utc": "2026-11-01T15:42:57Z",
+  "finished_at_utc": "2026-11-01T16:49:30Z",
+  "storage_source_shutdown_run": "m3-safari-gpu-diagnosis-qarma5-20261101-68",
+  "allow_unclean_storage_requested": false,
+  "qemu_exit_code": 0,
+  "qemu_reaped": true,
+  "guest_shutdown_observed": true,
+  "host_quit_requested": false,
+  "raw_collector_passed": false,
+  "raw_errors": [],
+  "root_cause": "WebKit responsiveness watchdog fires during slow process transitions under TCG: a slow WebContent triggers a GPU-process check, the GPU process misses the timeout and is killed, and replacements are killed while still starting.",
+  "idle_guest_reproduction": {
+    "webcontent_unresponsive": "16:32:17.98Z",
+    "gpu_1316_killed": "16:32:27.46Z",
+    "gpu_1566_first_log": "16:32:29.88Z",
+    "gpu_1566_killed": "16:32:33.79Z",
+    "gpu_1569_started_and_survived": "16:32:42Z",
+    "local_page_rendered": true
+  },
+  "excluded": [
+    "Reims rendering errors",
+    "background CPU contention as the sole cause",
+    "Run68 frame-gap stall (normal idle redraw gaps)"
+  ],
+  "other_findings": {
+    "spindump_sigabrt_reports": 4,
+    "reopen_windows_restored_safari_at_login": true,
+    "guest_network_down": "curl 10.0.2.2 rc7, DNS rc6, ifconfig in U state"
+  },
+  "open": [
+    "GPU-process stacks (spindump aborts)",
+    "WebKit timeout value",
+    "Run69 guest network failure"
+  ],
+  "evidence": [
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/ui-log69-3.png",
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/ui-log69-5.png",
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/ui-local-69.png",
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/ui-ps-local-69.png",
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/ui-spin2-69.png",
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/host-qemu-thread-samples.log",
+    "runs/e05-installed-boot/m3-safari-gpu-cause-qarma5-20261101-69/current-process.jsonl"
+  ]
+}

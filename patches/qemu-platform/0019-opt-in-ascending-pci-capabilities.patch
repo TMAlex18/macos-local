@@ -1,0 +1,61 @@
+diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
+--- a/hw/virtio/virtio-pci.c
++++ b/hw/virtio/virtio-pci.c
+@@ -2009,6 +2009,26 @@
+     virtio_add_feature(&vdev->host_features, VIRTIO_F_BAD_FEATURE);
+ }
+ 
++/* Reuse VMApple block/USB ordering without moving capability payloads. */
++static void virtio_pci_order_capabilities(VirtIOPCIProxy *proxy)
++{
++    uint8_t *config = proxy->pci_dev.config;
++    unsigned int cap, next, prev;
++
++    cap = config[PCI_CAPABILITY_LIST];
++    config[PCI_CAPABILITY_LIST] = 0;
++    while (cap) {
++        next = config[cap + PCI_CAP_LIST_NEXT];
++        prev = PCI_CAPABILITY_LIST;
++        while (config[prev] && config[prev] < cap) {
++            prev = config[prev] + PCI_CAP_LIST_NEXT;
++        }
++        config[cap + PCI_CAP_LIST_NEXT] = config[prev];
++        config[prev] = cap;
++        cap = next;
++    }
++}
++
+ /* This is called by virtio-bus just after the device is plugged. */
+ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
+ {
+@@ -2181,6 +2201,10 @@
+             }
+         }
+     }
++
++    if (proxy->ascending_capabilities) {
++        virtio_pci_order_capabilities(proxy);
++    }
+ }
+ 
+ static void virtio_pci_device_unplugged(DeviceState *d)
+@@ -2411,6 +2435,8 @@
+ }
+ 
+ static const Property virtio_pci_properties[] = {
++    DEFINE_PROP_BOOL("x-ascending-capabilities", VirtIOPCIProxy,
++                     ascending_capabilities, false),
+     DEFINE_PROP_BIT("virtio-pci-bus-master-bug-migration", VirtIOPCIProxy, flags,
+                     VIRTIO_PCI_FLAG_BUS_MASTER_BUG_MIGRATION_BIT, false),
+     DEFINE_PROP_BIT("modern-pio-notify", VirtIOPCIProxy, flags,
+diff --git a/include/hw/virtio/virtio-pci.h b/include/hw/virtio/virtio-pci.h
+--- a/include/hw/virtio/virtio-pci.h
++++ b/include/hw/virtio/virtio-pci.h
+@@ -138,6 +138,7 @@
+     uint16_t last_pcie_cap_offset;
+     uint32_t flags;
+     bool disable_modern;
++    bool ascending_capabilities;
+     OnOffAuto disable_legacy;
+     /* Transitional device id */
+     uint16_t trans_devid;

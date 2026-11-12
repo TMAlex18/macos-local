@@ -1,0 +1,131 @@
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -75,6 +75,12 @@
+     ARMPACKey kernel[5], user[5];
+ } VMApplePacCPU;
+ 
++typedef struct VMappleExperimentalMMIO {
++    MemoryRegion mr;
++    const char *name;
++    uint64_t reads, writes;
++} VMappleExperimentalMMIO;
++
+ struct VMAppleMachineState {
+     MachineState parent;
+ 
+@@ -92,6 +98,9 @@
+     uint64_t uuid;
+     char *tablet;
+     bool pac_software_model;
++    bool avp_legacy_mmio_stubs;
++    VMappleExperimentalMMIO avp_rtc;
++    VMappleExperimentalMMIO avp_ctrr;
+     uint8_t pac_master[32];
+     uint64_t pac_defaults[4];
+     VMApplePacCPU pac_cpu[32];
+@@ -273,6 +282,63 @@
+     return true;
+ }
+ 
++/*
++ * Experimental unmapped AVP register bank placeholders. An earlier
++ * macOS/HVF VMApple research RFC reported early boot probes at
++ * 0x30240000 and 0x30260000; zero reads and ignored writes were used
++ * there as compatibility placeholders. Their full hardware semantics
++ * are NOT established, especially for macOS 27.
++ *
++ * Keep these off by default, explicitly opt in for tracing/bringup only.
++ * No AVP sealed-register bank is added without behavioral evidence.
++ */
++static uint64_t vmapple_avp_research_read(void *opaque, hwaddr offset,
++                                         unsigned size)
++{
++    VMappleExperimentalMMIO *dev = opaque;
++    dev->reads++;
++    qemu_log_mask(LOG_UNIMP, "experimental VMApple %s READ+0x%" HWADDR_PRIx
++                  " width=%u (return 0)\n", dev->name, offset, size);
++    return 0;
++}
++
++static void vmapple_avp_research_write(void *opaque, hwaddr offset,
++                                      uint64_t value, unsigned size)
++{
++    VMappleExperimentalMMIO *dev = opaque;
++    dev->writes++;
++    qemu_log_mask(LOG_UNIMP, "experimental VMApple %s WRITE+0x%" HWADDR_PRIx
++                  " value=0x%" PRIx64 " width=%u (ignored)\n",
++                  dev->name, offset, value, size);
++}
++
++static const MemoryRegionOps vmapple_avp_research_ops = {
++    .read = vmapple_avp_research_read,
++    .write = vmapple_avp_research_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 8,
++    },
++};
++
++static void vmapple_avp_research_init(VMAppleMachineState *vms,
++                                     MemoryRegion *sysmem)
++{
++    VMappleExperimentalMMIO *rtc = &vms->avp_rtc;
++    VMappleExperimentalMMIO *ctrr = &vms->avp_ctrr;
++
++    rtc->name = "avp-rtc";
++    memory_region_init_io(&rtc->mr, OBJECT(vms), &vmapple_avp_research_ops,
++                          rtc, "x-vmapple-avp-rtc", 0x1000);
++    memory_region_add_subregion(sysmem, 0x30240000, &rtc->mr);
++
++    ctrr->name = "avp-ctrr";
++    memory_region_init_io(&ctrr->mr, OBJECT(vms), &vmapple_avp_research_ops,
++                          ctrr, "x-vmapple-avp-ctrr", 0x10000);
++    memory_region_add_subregion(sysmem, 0x30260000, &ctrr->mr);
++}
++
+ #define GPEX_NUM_IRQS 16
+ 
+ static void create_bdif(VMAppleMachineState *vms, MemoryRegion *mem)
+@@ -860,6 +926,9 @@
+     create_bdif(vms, sysmem);
+     create_pvpanic(vms, sysmem);
+     create_aes(vms, sysmem);
++    if (vms->avp_legacy_mmio_stubs) {
++        vmapple_avp_research_init(vms, sysmem);
++    }
+     create_gfx(vms, sysmem);
+     create_uart(vms, VMAPPLE_UART, sysmem, serial_hd(0));
+     create_rtc(vms);
+@@ -972,6 +1041,17 @@
+     VMAPPLE_MACHINE(obj)->pac_software_model = value;
+ }
+ 
++static bool vmapple_get_avp_legacy_mmio_stubs(Object *obj, Error **errp)
++{
++    return VMAPPLE_MACHINE(obj)->avp_legacy_mmio_stubs;
++}
++
++static void vmapple_set_avp_legacy_mmio_stubs(Object *obj, bool enabled,
++                                             Error **errp)
++{
++    VMAPPLE_MACHINE(obj)->avp_legacy_mmio_stubs = enabled;
++}
++
+ static void vmapple_machine_class_init(ObjectClass *oc, const void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
+@@ -980,6 +1060,12 @@
+                                    vmapple_get_pac_model, vmapple_set_pac_model);
+     object_class_property_set_description(oc, "x-pac-software-model",
+         "Experimental TCG HVC/PAC state model (default off); not Apple crypto");
++    object_class_property_add_bool(oc, "x-avp-legacy-mmio-stubs",
++                                   vmapple_get_avp_legacy_mmio_stubs,
++                                   vmapple_set_avp_legacy_mmio_stubs);
++    object_class_property_set_description(oc, "x-avp-legacy-mmio-stubs",
++        "Research-only AVP RTC/CTRR zero-read placeholders (default off); "
++        "not a claim of hardware or modern macOS behavior");
+     mc->init = mach_vmapple_init;
+     mc->max_cpus = 32;
+     mc->block_default_type = IF_VIRTIO;

@@ -1,0 +1,102 @@
+From: macos-local BDIF model
+Subject: [PATCH] Report each BDIF block backend's actual sector capacity
+Base-After: 0016-vmapple-ctrr-shared-romd-ram.patch
+
+Derive ROOT/AUX 512-byte sector counts independently from blk_getlength.
+Reject capacities that cannot be represented by the existing 32-bit MMIO
+view and sector request field, rather than silently truncating them. Preserve
+all block read/write, DMA and backend-length bounds checks unchanged.
+
+diff --git a/hw/vmapple/bdif.c b/hw/vmapple/bdif.c
+--- a/hw/vmapple/bdif.c
++++ b/hw/vmapple/bdif.c
+@@ -62,7 +62,7 @@
+ #define REG_QUEUE_CONTROL   0x404
+ #define REG_CMD             0x408
+ #define REG_QUEUE           0x410
+-#define REG_NEXT_DEVICE     0x420
++#define REG_BLOCK_CAPACITY  0x420
+ #define REG_UNK3            0x434
+ 
+ typedef struct VblkSector {
+@@ -91,6 +91,51 @@
+ #define VBLK_RET_FAILED   1
+ 
+ static void vusb_try_deliver(VMAppleBdifState *s);
++
++/* The block count must remain representable by the 32-bit MMIO view and
++ * the existing 32-bit sector request field.  Capacity is not a fixed board
++ * property: ROOT and AUX can have different, independently sized backends. */
++static bool bdif_block_capacity(BlockBackend *blk, const char *name,
++                                uint64_t *sectors, Error **errp)
++{
++    int64_t bytes;
++
++    *sectors = 0;
++    if (!blk) {
++        return true;
++    }
++    bytes = blk_getlength(blk);
++    if (bytes < 0) {
++        error_setg_errno(errp, -bytes,
++                         "vmapple-bdif: cannot read %s backend capacity", name);
++        return false;
++    }
++    /* blk_getlength reports the block layer's sector-aligned logical size,
++     * including a raw file's partial final sector.  Use the same geometry
++     * as vblk_cmd and VirtIO, not the underlying host file byte length. */
++    if ((uint64_t)bytes / BDRV_SECTOR_SIZE > UINT32_MAX) {
++        error_setg(errp, "vmapple-bdif: %s capacity exceeds the 32-bit sector count",
++                   name);
++        return false;
++    }
++    *sectors = (uint64_t)bytes / BDRV_SECTOR_SIZE;
++    return true;
++}
++
++static uint64_t bdif_read_capacity(BlockBackend *blk, const char *name)
++{
++    Error *error = NULL;
++    uint64_t sectors;
++
++    if (!bdif_block_capacity(blk, name, &sectors, &error)) {
++        /* Also reject an unsupported external resize instead of wrapping its
++         * count into a plausible smaller disk.  Initial errors fail realize. */
++        qemu_log_mask(LOG_GUEST_ERROR, "%s\n", error_get_pretty(error));
++        error_free(error);
++        return 0;
++    }
++    return sectors;
++}
+ 
+ static uint64_t bdif_read(void *opaque, hwaddr offset, unsigned size)
+ {
+@@ -137,13 +182,13 @@
+     case REG_UNK3:
+         ret = 0x0;
+         break;
+-    case REG_NEXT_DEVICE:
++    case REG_BLOCK_CAPACITY:
+         switch (devid) {
+         case DEVID_ROOT:
+-            ret = 0x8000000;
++            ret = bdif_read_capacity(s->root, "root");
+             break;
+         case DEVID_AUX:
+-            ret = 0x10000;
++            ret = bdif_read_capacity(s->aux, "aux");
+             break;
+         }
+         break;
+@@ -542,7 +587,10 @@
+      * Respect a read-only backend and retain its existing sharing contract. */
+     for (size_t i = 0; i < ARRAY_SIZE(backends); i++) {
+         BlockBackend *blk = backends[i];
+-        uint64_t perm, shared_perm;
++        uint64_t perm, shared_perm, sectors;
++        if (!bdif_block_capacity(blk, i ? "root" : "aux", &sectors, errp)) {
++            return;
++        }
+         if (!blk) {
+             continue;
+         }

@@ -1,0 +1,82 @@
+diff --git a/crates/reims-vgpu-core/src/tasks/remote.rs b/crates/reims-vgpu-core/src/tasks/remote.rs
+index 35e6b76..52d2dc4 100644
+--- a/crates/reims-vgpu-core/src/tasks/remote.rs
++++ b/crates/reims-vgpu-core/src/tasks/remote.rs
+@@ -243,7 +243,7 @@ impl<P: Platform> RemoteTask<P> {
+         task_id: u32,
+     ) -> Option<Arc<Self>> {
+         let map = device.upgrade().and_then(|d| d.memory_map());
+-        if map.is_some_and(|m| !whole_pages(&m)) {
++        if map.is_some_and(|m| !whole_pages(&m, platform.vm().page_size())) {
+             return None;
+         }
+         // The endpoint is made before the connection opens.
+@@ -453,14 +453,22 @@ impl<P: Platform> Drop for RemoteTask<P> {
+     }
+ }
+ 
+-/// Whether an isolated task can use `map`: every range a whole number of pages, at a host
+-/// address that is page-aligned and not NULL. The service reads guest RAM through these same host
+-/// ranges.
+-fn whole_pages<P: Platform>(map: &MemoryMap<P>) -> bool {
+-    const IN_PAGE: u64 = APV_PAGE_SIZE - 1;
++/// Whether an isolated task can share the map: lengths cover whole guest
++/// pages and host VM pages, while host pointers obey the host VM granule.
++/// An ARM64 guest's 16 KiB page number does not require a Linux x86_64
++/// host mapping address to be 16 KiB aligned (4 KiB remains valid).
++fn whole_pages<P: Platform>(map: &MemoryMap<P>, host_page: u64) -> bool {
++    if !host_page.is_power_of_two() {
++        return false;
++    }
++    let host_mask = host_page.wrapping_sub(1);
++    let length_mask = host_mask | (APV_PAGE_SIZE - 1);
+     map.ranges().iter().all(|r| {
+         let host = r.virtual_address.addr().to_u64();
+-        host != 0 && r.physical_length != 0 && (host | r.physical_length) & IN_PAGE == 0
++        host != 0
++            && r.physical_length != 0
++            && host & host_mask == 0
++            && r.physical_length & length_mask == 0
+     })
+ }
+ 
+@@ -1349,11 +1357,12 @@ mod tests {
+         /// host address or a zero length makes no task: nothing is launched and the define fails
+         #[test]
+         fn a_map_that_is_not_whole_pages_makes_no_task() {
+-            // A guest page and half of one: 0x4000 and 0x2000 on a 16 KiB guest page.
++            // Guest lengths and host pointer alignment are independent.
+             let (page, half) = (APV_PAGE_SIZE, APV_PAGE_SIZE / 2);
++            let host_half = crate::testkit::guest_ram::PAGE_SIZE / 2;
+             for bad in [
+                 (0, page + half, 0x10_0000),
+-                (0, page, 0x10_0000 + half as usize),
++                (0, page, 0x10_0000 + host_half as usize),
+                 (0, 0, 0x10_0000),
+                 (0, page, 0),
+             ] {
+@@ -1365,6 +1374,24 @@ mod tests {
+             }
+         }
+ 
++        /// Linux host-page-aligned memory can serve larger guest pages.
++        /// The scripted service records the map; it never dereferences these
++        /// synthetic host addresses. The two device/FIFO lifecycle tests use
++        /// real backing memory and exercise the same launch gate.
++        #[test]
++        fn host_page_alignment_does_not_require_guest_page_alignment() {
++            let h = harness(standard);
++            let host_page = h.platform.vm().page_size();
++            let address = 0x10_0000 + host_page as usize;
++            with_map(&h, &[(0, APV_PAGE_SIZE.max(host_page), address)]);
++            if host_page < APV_PAGE_SIZE {
++                assert_ne!(address as u64 % APV_PAGE_SIZE, 0);
++            }
++            assert_eq!(address as u64 % host_page, 0);
++            assert!(h.try_task().is_some());
++            assert_eq!(h.launcher.launched().len(), 1);
++        }
++
+         /// A device that is gone dies at its features
+         #[test]
+         fn a_device_that_is_gone_is_a_null_dereference_at_the_features() {

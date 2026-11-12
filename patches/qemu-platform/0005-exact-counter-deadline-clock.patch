@@ -1,0 +1,245 @@
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -19,6 +19,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "gtimer-exact.h"
+ #include "qemu/qemu-print.h"
+ #include "qemu/timer.h"
+ #include "qemu/log.h"
+@@ -1456,6 +1457,23 @@
+       NANOSECONDS_PER_SECOND / cpu->gt_cntfrq_hz : 1;
+ }
+ 
++uint64_t gt_counter_from_ns(ARMCPU *cpu, int64_t ns)
++{
++    if (cpu->gt_cntfrq_exact) {
++        return arm_gt_exact_ticks(MAX(ns, 0), cpu->gt_cntfrq_hz);
++    }
++    return ns / gt_cntfrq_period_ns(cpu);
++}
++
++int64_t gt_counter_deadline_ns(ARMCPU *cpu, uint64_t tick)
++{
++    if (cpu->gt_cntfrq_exact) {
++        return arm_gt_exact_deadline_ns(tick, cpu->gt_cntfrq_hz);
++    }
++    unsigned period = gt_cntfrq_period_ns(cpu);
++    return tick > INT64_MAX / period ? INT64_MAX : tick * period;
++}
++
+ static void arm_cpu_propagate_feature_implications(ARMCPU *cpu)
+ {
+     CPUARMState *env = &cpu->env;
+@@ -1940,8 +1958,15 @@
+         }
+     }
+ #ifndef CONFIG_USER_ONLY
++    if (cpu->gt_cntfrq_exact &&
++        (!tcg_enabled() || cpu->gt_cntfrq_hz > 1000000000ULL ||
++         cpu->gt_cntfrq_hz == 0)) {
++        error_setg(errp, "x-cntfrq-exact requires TCG and 1..1000000000 Hz");
++        return;
++    }
+     {
+-        uint64_t scale = gt_cntfrq_period_ns(cpu);
++        uint64_t scale = cpu->gt_cntfrq_exact ? SCALE_NS :
++                         gt_cntfrq_period_ns(cpu);
+ 
+         cpu->gt_timer[GTIMER_PHYS] = timer_new(QEMU_CLOCK_VIRTUAL, scale,
+                                                arm_gt_ptimer_cb, cpu);
+@@ -2511,6 +2536,7 @@
+     DEFINE_PROP_INT32("core-count", ARMCPU, core_count, -1),
+     /* True to default to the backward-compat old CNTFRQ rather than 1Ghz */
+     DEFINE_PROP_BOOL("backcompat-cntfrq", ARMCPU, backcompat_cntfrq, false),
++    DEFINE_PROP_BOOL("x-cntfrq-exact", ARMCPU, gt_cntfrq_exact, false),
+     DEFINE_PROP_BOOL("backcompat-pauth-default-use-qarma5", ARMCPU,
+                       backcompat_pauth_default_use_qarma5, false),
+     DEFINE_PROP_BOOL("cpu-on-copies-pauth-keys", ARMCPU,
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1208,6 +1208,8 @@
+ 
+     /* Generic timer counter frequency, in Hz */
+     uint64_t gt_cntfrq_hz;
++    /* Opt-in exact fractional timer conversion; false keeps the old ABI. */
++    bool gt_cntfrq_exact;
+ };
+ 
+ typedef struct ARMCPUInfo {
+@@ -1254,6 +1256,8 @@
+ void arm_gt_sel2vtimer_cb(void *opaque);
+ 
+ unsigned int gt_cntfrq_period_ns(ARMCPU *cpu);
++uint64_t gt_counter_from_ns(ARMCPU *cpu, int64_t ns);
++int64_t gt_counter_deadline_ns(ARMCPU *cpu, uint64_t tick);
+ void gt_rme_post_el_change(ARMCPU *cpu, void *opaque);
+ 
+ #define ARM_AFF0_SHIFT 0
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -1516,7 +1516,7 @@
+ {
+     ARMCPU *cpu = env_archcpu(env);
+ 
+-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / gt_cntfrq_period_ns(cpu);
++    return gt_counter_from_ns(cpu, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+ }
+ 
+ static void gt_update_gicv5_ppi(CPUARMState *env, int timeridx, bool level)
+@@ -1707,7 +1707,10 @@
+          * set the timer for as far in the future as possible. When the
+          * timer expires we will reset the timer for any remaining period.
+          */
+-        if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
++        if (cpu->gt_cntfrq_exact) {
++            timer_mod_ns(cpu->gt_timer[timeridx],
++                         gt_counter_deadline_ns(cpu, nexttick));
++        } else if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
+             timer_mod_ns(cpu->gt_timer[timeridx], INT64_MAX);
+         } else {
+             timer_mod(cpu->gt_timer[timeridx], nexttick);
+@@ -2496,7 +2499,7 @@
+      * can't call gt_get_countervalue(env), instead we directly
+      * call the lower level functions.
+      */
+-    return cpu_get_clock() / gt_cntfrq_period_ns(cpu);
++    return gt_counter_from_ns(cpu, cpu_get_clock());
+ }
+ 
+ static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -17,6 +17,7 @@
+  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "qemu/osdep.h"
++#include "target/arm/gtimer-exact.h"
+ #include "qemu/main-loop.h"
+ #include "cpu.h"
+ #include "exec/target_page.h"
+@@ -452,7 +453,9 @@
+     if (uadd64_overflow(cntval, timeout - cntvct, &nexttick)) {
+         nexttick = UINT64_MAX;
+     }
+-    if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
++    if (cpu->gt_cntfrq_exact) {
++        timer_mod_ns(cpu->wfxt_timer, gt_counter_deadline_ns(cpu, nexttick));
++    } else if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
+         /*
+          * If the timeout is too long for the signed 64-bit range
+          * of a QEMUTimer, let it expire early.
+@@ -504,6 +507,13 @@
+          * 1 << bit if the bit needs to flip twice to meet evntdir
+          */
+         int bit = evntis ? evnti + 8 : evnti;
++        if (cpu->gt_cntfrq_exact) {
++            /* Absolute physical tick, not a relative delta interpreted as
++             * a timestamp. Preserve old behavior in the compatibility path. */
++            uint64_t tick = arm_gt_exact_event_tick(gt_get_countervalue(env),
++                                                     offset, bit, evntdir);
++            return gt_counter_deadline_ns(cpu, tick);
++        }
+         uint64_t count = gt_get_countervalue(env) - offset;
+         uint64_t target_bit = BIT_ULL(bit);
+         uint64_t lower_bits = MAKE_64BIT_MASK(0, bit - 1);
+@@ -710,18 +720,26 @@
+     if (uadd64_overflow(cntval, timeout - cntvct, &nexttick)) {
+         nexttick = UINT64_MAX;
+     }
+-    if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
+-        nexttick = INT64_MAX;
+-    }
+-
+-    next_event = gt_calc_next_event_stream(env);
+-    if (next_event > 0 && next_event < nexttick) {
+-        timer_mod(cpu->wfxt_timer, next_event);
++    if (cpu->gt_cntfrq_exact) {
++        int64_t deadline = gt_counter_deadline_ns(cpu, nexttick);
++        next_event = gt_calc_next_event_stream(env);
++        if (next_event > 0 && next_event < deadline) {
++            deadline = next_event;
++        }
++        timer_mod_ns(cpu->wfxt_timer, deadline);
+     } else {
+-        if (nexttick == INT64_MAX) {
+-            timer_mod_ns(cpu->wfxt_timer, INT64_MAX);
++        if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
++            nexttick = INT64_MAX;
++        }
++        next_event = gt_calc_next_event_stream(env);
++        if (next_event > 0 && next_event < nexttick) {
++            timer_mod(cpu->wfxt_timer, next_event);
+         } else {
+-            timer_mod(cpu->wfxt_timer, nexttick);
++            if (nexttick == INT64_MAX) {
++                timer_mod_ns(cpu->wfxt_timer, INT64_MAX);
++            } else {
++                timer_mod(cpu->wfxt_timer, nexttick);
++            }
+         }
+     }
+ 
+diff --git a/target/arm/gtimer-exact.h b/target/arm/gtimer-exact.h
+new file mode 100644
+--- /dev/null
++++ b/target/arm/gtimer-exact.h
+@@ -0,0 +1,53 @@
++/* Exact ARM generic-timer tick/ns conversions for an opt-in TCG experiment.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * Bounds: 1 <= hz <= 1,000,000,000; non-negative QEMU virtual time.
++ * Quotient/remainder arithmetic avoids floating point and multiplication
++ * overflow. Deadline conversion rounds upward: the selected tick must have
++ * arrived at callback time, not one nanosecond later.
++ */
++#ifndef ARM_GTIMER_EXACT_H
++#define ARM_GTIMER_EXACT_H
++#include <stdbool.h>
++#include <stdint.h>
++#include <limits.h>
++
++static inline uint64_t arm_gt_exact_ticks(uint64_t ns, uint32_t hz)
++{
++    return (ns / UINT64_C(1000000000)) * hz +
++           ((ns % UINT64_C(1000000000)) * hz) / UINT64_C(1000000000);
++}
++
++static inline int64_t arm_gt_exact_deadline_ns(uint64_t tick, uint32_t hz)
++{
++    uint64_t sec = tick / hz;
++    uint64_t rem = tick % hz;
++    uint64_t ns, fraction;
++    if (sec > INT64_MAX / UINT64_C(1000000000)) {
++        return INT64_MAX;
++    }
++    ns = sec * UINT64_C(1000000000);
++    fraction = (rem * UINT64_C(1000000000) + hz - 1) / hz;
++    if (fraction > (uint64_t)INT64_MAX - ns) {
++        return INT64_MAX;
++    }
++    return ns + fraction;
++}
++
++/* Return the next physical counter value that causes the requested edge
++ * in bit `bit` of the offset guest counter (EVNTDIR: 0=rising, 1=falling).
++ * The offset may wrap the guest counter; saturate physical-count overflow.
++ */
++static inline uint64_t arm_gt_exact_event_tick(uint64_t physical,
++                                              uint64_t offset,
++                                              unsigned bit, bool falling)
++{
++    uint64_t value = physical - offset;
++    uint64_t edge = UINT64_C(1) << bit;
++    uint64_t delta = edge - (value & (edge - 1));
++    if (((value & edge) != 0) ^ falling) {
++        delta += edge;
++    }
++    return delta > UINT64_MAX - physical ? UINT64_MAX : physical + delta;
++}
++#endif

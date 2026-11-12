@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "run": "m3-safari-gpu-diagnosis-qarma5-20261101-68",
+  "started_at": "2026-10-31T23:59:28.722254Z",
+  "qemu_pid": 355962,
+  "login_authorization": "existing private/initial-setup.json locator only",
+  "safari": {
+    "safari_pid": 511,
+    "gpu_pid": 630,
+    "gpu_snapshot_cpu_percent": 0.0,
+    "gpu_snapshot_time": "0:02.39",
+    "gpu_exit_confirmation": "ps -p 630 returned no row; THREADS=1; ps -M headers only",
+    "direct_evidence": "ui-gpu630-final.png"
+  },
+  "host_sampler": {
+    "path": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/host-qemu-thread-samples.log",
+    "interval_seconds": 30,
+    "samples_until": "2026-11-01T00:46:23.890Z",
+    "qemu_tcg_cpu_percent_samples": [
+      74.6,
+      74.2
+    ],
+    "reims_vgpu_thread_cpu_percent_samples": "0.0-0.2",
+    "qemu_tcg_cpu_percent_kind": "ps lifetime average of CPU 0/TCG (cumulative TIME / thread age), not interval utilization"
+  },
+  "vgpu_trace_counts": {
+    "apple_gfx_read": 622132,
+    "apple_gfx_write": 236253,
+    "apple_gfx_raise_irq": 236099,
+    "apple_gfx_new_frame": 11252,
+    "virtio_blk_req_complete": 420214
+  },
+  "vgpu_stall": {
+    "observed": "qemu-stderr.log",
+    "guest_window_rate": "0.0/s",
+    "max_gap_ms_range": [
+      13256.4,
+      50256.4
+    ],
+    "window_gpu": "-"
+  },
+  "shutdown": {
+    "kernel_initiated_line": "shutdown[1239]<-sessionlogoutd[1237]",
+    "kernel_terminal_state": "WAITING_ON_SHUTDOWN_STALL_REPORT",
+    "qmp_lifecycle": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/qmp-lifecycle.json",
+    "event": "SHUTDOWN",
+    "guest": true,
+    "reason": "guest-shutdown",
+    "event_at": "2026-11-01T00:46:02.717369Z",
+    "qemu_exit_code": 0,
+    "qemu_reaped": true,
+    "host_quit_requested": false
+  },
+  "log_show": {
+    "bounded_2m": "returned no matching lines",
+    "bounded_15m_predicate": "did not return before shutdown; partial screenshot retained",
+    "exact_termination_reason": "unresolved"
+  },
+  "rerun": {
+    "second_clean_rerun_attempted": false,
+    "reason": "Run68 consumed available window; preserve evidence before any future rerun"
+  },
+  "artifacts": {
+    "report": "docs/reports/M3-SAFARI-GPU-DIAGNOSIS-RUN68.md",
+    "results": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/results.json",
+    "retained_storage": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/retained-storage.json",
+    "qmp_lifecycle": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/qmp-lifecycle.json",
+    "kernel_log": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/kernel-boot.log",
+    "qemu_stderr": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/qemu-stderr.log",
+    "host_threads": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/host-qemu-thread-samples.log",
+    "ui_gpu_exit": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/ui-gpu630-final.png",
+    "ui_log_partial": "runs/e05-installed-boot/m3-safari-gpu-diagnosis-qarma5-20261101-68/ui-log-predicate-68.png"
+  },
+  "storage_lineage": {
+    "source_run": "m2-native-install-observed-finish-qarma5-20261030-53",
+    "previous_shutdown_run": "m3-safari-gpu-diagnosis-qarma5-20261031-66",
+    "previous_shutdown_manifest_sha256": "924d1fcc8c470e05c8968a008dbbe9e68b9488a149713267fb0d7c733145dd5d",
+    "previous_qemu_exit_code": -9,
+    "previous_teardown": "external_cancel",
+    "allow_unclean_storage_requested": true,
+    "explicit_unclean_reuse": true,
+    "aux_inode": 15217498,
+    "root_inode": 15217499,
+    "guest_clean_shutdown_proven": false,
+    "scope": "Run68 booted the same aux/root inodes left by the run-66 SIGKILL exit; its own guest shutdown is observed, filesystem cleanliness is not proven."
+  },
+  "preceding_attempts": {
+    "run66": {
+      "run": "m3-safari-gpu-diagnosis-qarma5-20261031-66",
+      "status": "external_cancel_after_powerdown_without_guest_shutdown",
+      "qemu_exit_code": -9,
+      "teardown": "external_cancel",
+      "powerdown_request_observed_at_utc": "2026-10-31T23:24:42.246589Z"
+    },
+    "run67": {
+      "run": "m3-safari-gpu-diagnosis-qarma5-20261101-67",
+      "status": "refused_before_qemu_start",
+      "errors": [
+        "ValueError: Latest target run lacks normal QMP exit or observed guest shutdown; explicit unclean-state reuse is required"
+      ]
+    }
+  },
+  "offline_cpu_occupancy": {
+    "tool": "experiments/E05-installed-boot/cpu_occupancy.py",
+    "outputs": [
+      "runs/m3-run68-cpu-occupancy-20261101.json",
+      "runs/m3-run68-cpu-occupancy-safari-window-20261101.json"
+    ],
+    "windows_utc": {
+      "login_to_shutdown": [
+        "2026-11-01T00:14:00Z",
+        "2026-11-01T00:45:00Z"
+      ],
+      "safari_to_gpu_exit_check": [
+        "2026-11-01T00:19:30Z",
+        "2026-11-01T00:29:00Z"
+      ]
+    },
+    "ps_percent_cpu_is_lifetime_average": true,
+    "host_vcpu_cores_before_login": [
+      3.06,
+      3.63
+    ],
+    "host_vcpu_cores_login_to_shutdown": [
+      4.99,
+      6.75
+    ],
+    "host_vcpu_cores_login_to_shutdown_median": 6.05,
+    "host_vcpu_cores_safari_window": [
+      5.12,
+      6.59
+    ],
+    "host_single_vcpu_max_fraction": 0.86,
+    "host_graphics_cores_max": 0.1,
+    "host_logical_cpus": 20,
+    "guest_idle_slots_before_login": [
+      110,
+      224
+    ],
+    "guest_idle_slots_login_to_shutdown": [
+      4,
+      464
+    ],
+    "guest_kernel_task_slots_login_to_shutdown": [
+      23,
+      464
+    ],
+    "guest_idle_slots_safari_window": [
+      0,
+      144
+    ],
+    "guest_top_on_cpu_safari_window": [
+      [
+        "sirittsd",
+        11
+      ],
+      [
+        "kernel_task",
+        9
+      ],
+      [
+        "WindowServer",
+        8
+      ],
+      [
+        "homed",
+        5
+      ],
+      [
+        "eligibilityd",
+        5
+      ],
+      [
+        "siriactionsd",
+        5
+      ]
+    ],
+    "gpu_pid_630_sampled_on_cpu": false,
+    "webkit_pids_sampled": [
+      602,
+      849,
+      852,
+      928,
+      927
+    ],
+    "scope": "30 s point samples; favours guest CPU starvation of the WebKit GPU process as the first hypothesis, does not exclude a Metal/vGPU IPC wait or watchdog policy. The later log process is most likely the diagnostic log show query."
+  }
+}

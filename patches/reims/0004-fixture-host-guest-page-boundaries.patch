@@ -1,0 +1,65 @@
+diff --git a/crates/reims-vgpu-core/src/device/fifos.rs b/crates/reims-vgpu-core/src/device/fifos.rs
+index 4f58dc4..596832e 100644
+--- a/crates/reims-vgpu-core/src/device/fifos.rs
++++ b/crates/reims-vgpu-core/src/device/fifos.rs
+@@ -588,7 +588,7 @@ mod tests {
+         let r = rig();
+         r.set_ram_u32(child_node_pa(1), 1);
+         r.set_ram_u32(child_node_pa(1) + 0x10, 0x20);
+-        r.set_ram_u32(0x20 * 0x1000, 0x21);
++        r.set_ram_u32(0x20 * APV_PAGE_SIZE, 0x21);
+         r.device.set_root_page(Hold::NONE, 1);
+         let m = r.mark();
+         let me = std::thread::current().name().map(str::to_owned);
+@@ -713,7 +713,7 @@ mod tests {
+         // a `PGRemoteTask`.
+         assert!(host.ram().write_u32(child_node_pa(1), 1));
+         assert!(host.ram().write_u32(child_node_pa(1) + 0x10, 0x20));
+-        assert!(host.ram().write_u32(0x20 * 0x1000, 0x21));
++        assert!(host.ram().write_u32(0x20 * APV_PAGE_SIZE, 0x21));
+         device.set_root_page(Hold::NONE, 1);
+         assert!(device.create_fifo(1).unwrap());
+         device
+@@ -749,7 +749,7 @@ mod tests {
+         let r = rig();
+         r.set_ram_u32(child_node_pa(1), 1);
+         r.set_ram_u32(child_node_pa(1) + 0x10, 0x20);
+-        r.set_ram_u32(0x20 * 0x1000, 0x21);
++        r.set_ram_u32(0x20 * APV_PAGE_SIZE, 0x21);
+         // Task 1's root node at page 0x55: page-table depth 1, length 0x4000.
+         r.set_ram_u32(0x55 * APV_PAGE_SIZE + 4, 1);
+         assert!(r.host.ram().write_u64(0x55 * APV_PAGE_SIZE + 0x14, 0x4000));
+@@ -859,7 +859,7 @@ mod tests {
+         device.features.store(&f);
+         assert!(host.ram().write_u32(child_node_pa(1), 1));
+         assert!(host.ram().write_u32(child_node_pa(1) + 0x10, 0x20));
+-        assert!(host.ram().write_u32(0x20 * 0x1000, 0x21));
++        assert!(host.ram().write_u32(0x20 * APV_PAGE_SIZE, 0x21));
+         // Task 0's root node at page 0x55: page-table depth 1, length 0x4000.
+         assert!(host.ram().write_u32(0x55 * APV_PAGE_SIZE + 4, 1));
+         assert!(host.ram().write_u64(0x55 * APV_PAGE_SIZE + 0x14, 0x4000));
+diff --git a/crates/reims-vgpu-core/src/tasks/mapping_task.rs b/crates/reims-vgpu-core/src/tasks/mapping_task.rs
+index 5e29293..a1cd028 100644
+--- a/crates/reims-vgpu-core/src/tasks/mapping_task.rs
++++ b/crates/reims-vgpu-core/src/tasks/mapping_task.rs
+@@ -120,8 +120,9 @@ mod tests {
+     use crate::testkit::script::Step;
+ 
+     type Task = MappingTask<FakePlatform>;
+-    /// The host's page.
+-    const PAGE: u64 = crate::testkit::guest_ram::PAGE_SIZE;
++    /// Guest page for test task sizes and guest-memory ranges; the test
++    /// platform's host VM still allocates at its own host page granularity.
++    const PAGE: u64 = crate::guest::records::APV_PAGE_SIZE;
+ 
+     fn plat() -> Arc<FakePlatform> {
+         Arc::new(FakePlatform::new())
+@@ -364,7 +365,7 @@ mod tests {
+             assert_eq!(
+                 calls[1].args,
+                 vec![
+-                    Arg::Ptr(t.base_address().wrapping_add(PAGE).addr()),
++                    Arg::Ptr(t.base_address().wrapping_add((PAGE + PAGE / 2) & !(crate::testkit::guest_ram::PAGE_SIZE - 1)).addr()),
+                     Arg::U64(PAGE),
+                     Arg::Bool(true),
+                     Arg::I32(0)

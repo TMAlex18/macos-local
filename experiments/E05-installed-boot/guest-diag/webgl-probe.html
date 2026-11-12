@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>macos-local WebGL2 readback</title>
+<style>
+body { margin: 28px; background: #fff; color: #111; font: 16px system-ui, sans-serif; }
+h1 { font-size: 26px; margin: 0 0 12px; }
+canvas { display: block; width: 768px; max-width: 95%; height: auto;
+  margin: 20px 0; border: 1px solid #777; image-rendering: pixelated; }
+pre { white-space: pre-wrap; font: 13px ui-monospace, monospace; }
+</style>
+<h1>WebGL2 frame and readback</h1>
+<p id="status">Preparing the test…</p>
+<p>Expected display: cyan / magenta / yellow above red / green / blue.</p>
+<canvas id="frame" width="96" height="64"></canvas>
+<pre id="details"></pre>
+<script id="vertex-source" type="x-shader/x-vertex">#version 300 es
+layout(location = 0) in vec2 position;
+void main() {
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+</script>
+<script id="fragment-source" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 color;
+void main() {
+    bool top = gl_FragCoord.y >= 32.0;
+    vec3 rgb;
+    if (gl_FragCoord.x < 32.0) {
+        rgb = top ? vec3(0.0, 1.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    } else if (gl_FragCoord.x < 64.0) {
+        rgb = top ? vec3(1.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    } else {
+        rgb = top ? vec3(1.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+    }
+    color = vec4(rgb, 1.0);
+}
+</script>
+<script>
+'use strict';
+// Self-authored fixture. WebGL2/GLES3 API basis:
+// https://registry.khronos.org/webgl/specs/2.0.0/
+// Raw readPixels buffers are uploaded unchanged; the host is the pixel oracle.
+(async function () {
+    const W = 96, H = 64;
+    const canvas = document.getElementById('frame');
+    const status = document.getElementById('status');
+    const details = document.getElementById('details');
+    const tag = location.hash.slice(1);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/.test(tag) ||
+        !['http:', 'https:'].includes(location.protocol)) {
+        status.textContent = 'A valid result tag and HTTP file service are required.';
+        return;
+    }
+    const report = {
+        schema: 1, fixture: 'webgl2-six-tiles-v1', tag,
+        width: W, height: H, channels: 4, format: 'RGBA8', row_origin: 'bottom-left',
+        status: 'started', stage: 'context', started_at: new Date().toISOString(),
+        user_agent: navigator.userAgent, context_created: false, context_lost: false,
+        shaders: {}, gl_errors: [], outputs: {}, uploads: {},
+        scope: 'WebGL2 draw/readback only; no physical GPU, FPS or input-latency claim.'
+    };
+    const start = performance.now();
+    let gl = null;
+    canvas.addEventListener('webglcontextlost', () => { report.context_lost = true; });
+    canvas.addEventListener('webglcontextcreationerror', event => {
+        report.context_creation_message = String(event.statusMessage || '').slice(0, 2048);
+    });
+    async function put(name, body, contentType) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+            const response = await fetch('/up/' + name, {
+                method: 'PUT', body, headers: {'Content-Type': contentType},
+                signal: controller.signal
+            });
+            if (response.status !== 201) throw new Error('Upload HTTP ' + response.status);
+            return response.status;
+        } finally { clearTimeout(timeout); }
+    }
+    function errors(stage) {
+        for (let i = 0; i < 16; i++) {
+            const code = gl.getError();
+            if (code === gl.NO_ERROR) break;
+            report.gl_errors.push({stage, code});
+        }
+        report.context_lost = report.context_lost || gl.isContextLost();
+        if (report.gl_errors.length) throw new Error('WebGL error during ' + stage);
+        if (report.context_lost) throw new Error('WebGL context lost');
+    }
+    function shader(type, id, name) {
+        const value = gl.createShader(type);
+        if (!value) throw new Error('Cannot create ' + name + ' shader');
+        gl.shaderSource(value, document.getElementById(id).textContent);
+        gl.compileShader(value);
+        const compiled = gl.getShaderParameter(value, gl.COMPILE_STATUS);
+        report.shaders[name] = {
+            compiled, log: (gl.getShaderInfoLog(value) || '').slice(0, 4096)
+        };
+        if (!compiled) throw new Error(name + ' shader did not compile');
+        return value;
+    }
+    function drawAndRead(name, framebuffer) {
+        report.stage = 'draw-' + name;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.readBuffer(framebuffer ? gl.COLOR_ATTACHMENT0 : gl.BACK);
+        const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        report.outputs[name] = {
+            file: tag + '-' + name + '.bin', bytes: W * H * 4,
+            framebuffer_status: complete, complete: complete === gl.FRAMEBUFFER_COMPLETE
+        };
+        if (complete !== gl.FRAMEBUFFER_COMPLETE) throw new Error(name + ' framebuffer incomplete');
+        gl.viewport(0, 0, W, H);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        errors('draw-' + name);
+        const pixels = new Uint8Array(W * H * 4);
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        errors('read-' + name);
+        return pixels;
+    }
+    try {
+        status.textContent = 'Creating WebGL2 context…';
+        gl = canvas.getContext('webgl2', {
+            alpha: false, antialias: false, depth: false, stencil: false,
+            preserveDrawingBuffer: true
+        });
+        if (!gl) {
+            report.status = 'unavailable';
+            throw new Error('WebGL2 context is unavailable');
+        }
+        report.context_created = true;
+        report.context_attributes = gl.getContextAttributes();
+        report.drawing_buffer_width = gl.drawingBufferWidth;
+        report.drawing_buffer_height = gl.drawingBufferHeight;
+        report.version = gl.getParameter(gl.VERSION);
+        report.shading_language_version = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+        report.vendor = gl.getParameter(gl.VENDOR);
+        report.renderer = gl.getParameter(gl.RENDERER);
+        const debug = gl.getExtension('WEBGL_debug_renderer_info');
+        report.unmasked_vendor = debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : null;
+        report.unmasked_renderer = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null;
+        report.stage = 'shaders';
+        const program = gl.createProgram();
+        if (!program) throw new Error('Cannot create shader program');
+        gl.attachShader(program, shader(gl.VERTEX_SHADER, 'vertex-source', 'vertex'));
+        gl.attachShader(program, shader(gl.FRAGMENT_SHADER, 'fragment-source', 'fragment'));
+        gl.linkProgram(program);
+        report.program_linked = gl.getProgramParameter(program, gl.LINK_STATUS);
+        report.program_log = (gl.getProgramInfoLog(program) || '').slice(0, 4096);
+        if (!report.program_linked) throw new Error('Shader program did not link');
+        gl.useProgram(program);
+        gl.bindVertexArray(gl.createVertexArray());
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        for (const flag of [gl.BLEND, gl.DITHER, gl.DEPTH_TEST, gl.STENCIL_TEST,
+                            gl.SCISSOR_TEST, gl.CULL_FACE]) gl.disable(flag);
+        gl.colorMask(true, true, true, true);
+        gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        const framebuffer = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        errors('setup');
+        const offscreen = drawAndRead('offscreen', framebuffer);
+        const displayed = drawAndRead('default', null);
+        report.stage = 'uploads';
+        report.uploads.offscreen = await put(tag + '-offscreen.bin', offscreen, 'application/octet-stream');
+        report.uploads.default = await put(tag + '-default.bin', displayed, 'application/octet-stream');
+        report.context_lost = report.context_lost || gl.isContextLost();
+        if (report.context_lost) throw new Error('Context lost before completion');
+        report.status = 'rendered';
+        report.stage = 'complete';
+    } catch (error) {
+        if (report.status !== 'unavailable') report.status = 'error';
+        report.error = String(error.message || error).slice(0, 2048);
+    }
+    if (gl) report.context_lost = report.context_lost || gl.isContextLost();
+    report.finished_at = new Date().toISOString();
+    report.elapsed_ms = performance.now() - start;
+    details.textContent = JSON.stringify(report, null, 2);
+    try {
+        await put(tag + '.json', JSON.stringify(report), 'application/json');
+        status.textContent = report.status === 'rendered'
+            ? 'Rendered and uploaded both raw readbacks. Host pixel validation is separate.'
+            : 'Test report uploaded: ' + report.status + ' (' + report.stage + ').';
+        document.documentElement.dataset.reportUploaded = 'true';
+    } catch (error) {
+        status.textContent = 'Report upload failed: ' + String(error.message || error);
+        document.documentElement.dataset.reportUploaded = 'false';
+    }
+})();
+</script>
+</html>

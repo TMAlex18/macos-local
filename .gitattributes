@@ -1,0 +1,2 @@
+# Preserve exact unified diff context whitespace in upstream patch files.
+patches/**/*.patch -whitespace

@@ -1,0 +1,375 @@
+diff --git a/hw/vmapple/Kconfig b/hw/vmapple/Kconfig
+index 37c27473e2..bfd6478b45 100644
+--- a/hw/vmapple/Kconfig
++++ b/hw/vmapple/Kconfig
+@@ -14,10 +14,10 @@ config VMAPPLE_VIRTIO_BLK
+ 
+ config VMAPPLE
+     bool
+-    depends on ARM
+-    depends on HVF
++    depends on AARCH64
++    depends on HVF || TCG || KVM
+     depends on MAC_PVG
+-    default y if ARM
++    default y if AARCH64
+     imply PCI_DEVICES
+     select ARM_GICV3
+     select PLATFORM_BUS
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+index da11b91132..8affbd7c08 100644
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -44,18 +44,36 @@
+ #include "hw/vmapple/vmapple.h"
+ #include "net/net.h"
+ #include "qapi/error.h"
++#include "crypto/random.h"
++#include "migration/blocker.h"
+ #include "qapi/visitor.h"
+ #include "qapi/qapi-visit-common.h"
+ #include "qobject/qlist.h"
+ #include "standard-headers/linux/input.h"
+ #include "system/hvf.h"
++#ifdef CONFIG_HVF
+ #include "system/hvf_int.h"
++#include "target/arm/hvf_arm.h"
++#endif
+ #include "system/reset.h"
+ #include "system/runstate.h"
+ #include "system/system.h"
+ #include "target/arm/gtimer.h"
+ #include "target/arm/cpu.h"
+-#include "target/arm/hvf_arm.h"
++#include "target/arm/internals.h"
++#include "system/tcg.h"
++
++/* Experimental software state model; NOT Apple's hardware PAC cipher or
++ * proprietary key derivation. Guest architectural authentication stays active.
++ * A per-VM random master and domain-separated HMAC-SHA256 derive 128-bit keys.
++ * This is deliberately opt-in and has no migration compatibility promise. */
++typedef struct VMApplePacCPU {
++    const uint8_t *master;
++    const uint64_t *defaults;
++    uint64_t a, b, diversifier, g;
++    bool initialized, force_el0;
++    ARMPACKey kernel[5], user[5];
++} VMApplePacCPU;
+ 
+ struct VMAppleMachineState {
+     MachineState parent;
+@@ -73,6 +91,11 @@ struct VMAppleMachineState {
+     MemoryRegion ecam_alias;
+     uint64_t uuid;
+     char *tablet;
++    bool pac_software_model;
++    uint8_t pac_master[32];
++    uint64_t pac_defaults[4];
++    VMApplePacCPU pac_cpu[32];
++    Error *pac_migration_blocker;
+ };
+ 
+ #define TYPE_VMAPPLE_MACHINE   MACHINE_TYPE_NAME("vmapple")
+@@ -138,6 +161,118 @@ static const int irqmap[] = {
+     [VMAPPLE_GICV2M] = 0x80
+ };
+ 
++
++/* KDF domains are local model choices, never claimed Apple-compatible bytes. */
++static ARMPACKey vmapple_pac_derive(const VMApplePacCPU *p, unsigned role,
++                                  uint64_t seed, bool el0)
++{
++    uint8_t data[32] = { 'M', 'L', 'P', 'A', 'C', 1, 0, 0 };
++    uint8_t digest[32];
++    gsize length = sizeof(digest);
++    GHmac *h = g_hmac_new(G_CHECKSUM_SHA256, p->master, 32);
++    data[6] = role;
++    data[7] = el0;
++    stq_le_p(data + 8, seed);
++    stq_le_p(data + 16, el0 ? p->diversifier : 0);
++    g_hmac_update(h, data, sizeof(data));
++    g_hmac_get_digest(h, digest, &length);
++    g_hmac_unref(h);
++    return (ARMPACKey){ .lo = ldq_le_p(digest), .hi = ldq_le_p(digest + 8) };
++}
++
++static void vmapple_pac_apply(ARMCPU *cpu, void *opaque)
++{
++    VMApplePacCPU *p = opaque;
++    ARMPACKey *k;
++    if (!p->initialized) {
++        return;
++    }
++    k = (arm_current_el(&cpu->env) == 0 || p->force_el0) ? p->user : p->kernel;
++    cpu->env.keys.apia = k[0];
++    cpu->env.keys.apda = k[1];
++    cpu->env.keys.apib = k[2];
++    cpu->env.keys.apdb = k[3];
++    cpu->env.keys.apga = k[4];
++}
++
++static void vmapple_pac_rekey(ARMCPU *cpu, VMApplePacCPU *p)
++{
++    uint64_t seeds[] = { p->a, p->a, p->b, p->b, p->g };
++    for (unsigned i = 0; i < 5; i++) {
++        p->kernel[i] = vmapple_pac_derive(p, i, seeds[i], false);
++        p->user[i] = i == 4 ? p->kernel[i] :
++                    vmapple_pac_derive(p, i, seeds[i], true);
++    }
++    vmapple_pac_apply(cpu, p);
++}
++
++static void vmapple_pac_cpu_reset(ARMCPU *cpu, void *opaque)
++{
++    VMApplePacCPU *p = opaque;
++    p->initialized = false;
++    p->force_el0 = false;
++    p->a = p->b = p->diversifier = p->g = 0;
++    memset(p->kernel, 0, sizeof(p->kernel));
++    memset(p->user, 0, sizeof(p->user));
++}
++
++static bool vmapple_pac_hvc(ARMCPU *cpu, void *opaque)
++{
++    VMApplePacCPU *p = opaque;
++    uint64_t *x = cpu->env.xregs;
++    uint64_t fid = x[0];
++    unsigned fn;
++    if ((fid & ~0xffULL) != 0xc1000000ULL) {
++        return false;
++    }
++    fn = fid & 0xff;
++    /* Unknown functions must not mutate state or report false success. */
++    if (fn > 6 && fn != 0xf0) {
++        x[0] = -1;                  /* SMCCC NOT_SUPPORTED */
++        return true;
++    }
++    if (fn == 0xf0) {
++        x[0] = 0;                   /* documented NOP */
++        return true;
++    }
++    if (fn != 0 && !p->initialized) {
++        x[0] = -3;                  /* explicit model pre-init refusal */
++        return true;
++    }
++    if (fn == 5 && x[1] > 1) {
++        x[0] = -2;                  /* invalid boolean; no mutation */
++        return true;
++    }
++    switch (fn) {
++    case 0:
++        p->a = p->defaults[0];
++        p->b = p->defaults[1];
++        p->diversifier = p->defaults[2];
++        p->g = p->defaults[3];
++        p->force_el0 = false;
++        p->initialized = true;
++        break;
++    case 1:
++        for (unsigned i = 0; i < 4; i++) {
++            x[i + 1] = p->defaults[i];
++        }
++        x[0] = 0;
++        return true;
++    case 2: p->a = x[1]; break;
++    case 3: p->b = x[1]; break;
++    case 4: p->diversifier = x[1]; break;
++    case 5:
++        p->force_el0 = x[1];
++        p->diversifier = x[2];
++        break;
++    case 6: p->g = x[1]; break;
++    default: g_assert_not_reached();
++    }
++    vmapple_pac_rekey(cpu, p);
++    x[0] = 0;
++    return true;
++}
++
+ #define GPEX_NUM_IRQS 16
+ 
+ static void create_bdif(VMAppleMachineState *vms, MemoryRegion *mem)
+@@ -461,6 +596,7 @@ static void create_pcie(VMAppleMachineState *vms)
+     }
+ }
+ 
++#ifdef CONFIG_HVF
+ /*
+  * macOS 14 and later need two changes to the kernel's memory to boot here,
+  * made when iBoot enters the kernel. From reset, RAM is not executable: each
+@@ -602,16 +738,22 @@ static bool vmapple_exec_fault(CPUState *cpu, hwaddr ipa)
+     return true;
+ }
+ 
++#endif /* CONFIG_HVF */
++
+ static void vmapple_reset(void *opaque)
+ {
+     VMAppleMachineState *vms = opaque;
+     hwaddr base = vms->memmap[VMAPPLE_FIRMWARE].base;
+ 
+     cpu_set_pc(first_cpu, base);
+-    hvf_arm_exec_fault = vmapple_exec_fault;
+-    assert_hvf_ok(hv_vm_protect(vms->memmap[VMAPPLE_MEM].base,
+-                                MACHINE(vms)->ram_size,
+-                                HV_MEMORY_READ | HV_MEMORY_WRITE));
++#ifdef CONFIG_HVF
++    if (hvf_enabled()) {
++        hvf_arm_exec_fault = vmapple_exec_fault;
++        assert_hvf_ok(hv_vm_protect(vms->memmap[VMAPPLE_MEM].base,
++                                    MACHINE(vms)->ram_size,
++                                    HV_MEMORY_READ | HV_MEMORY_WRITE));
++    }
++#endif
+ }
+ 
+ static void mach_vmapple_init(MachineState *machine)
+@@ -626,6 +768,23 @@ static void mach_vmapple_init(MachineState *machine)
+ 
+     vms->memmap = memmap;
+     machine->usb = true;
++    if (vms->pac_software_model) {
++        if (!tcg_enabled()) {
++            error_report("x-pac-software-model requires TCG");
++            exit(1);
++        }
++        if (qcrypto_random_bytes(vms->pac_master, sizeof(vms->pac_master),
++                                 &error_fatal) < 0 ||
++            qcrypto_random_bytes(vms->pac_defaults, sizeof(vms->pac_defaults),
++                                 &error_fatal) < 0) {
++            exit(1);
++        }
++        error_setg(&vms->pac_migration_blocker,
++                   "experimental VMApple PAC model has no migration state format");
++        if (migrate_add_blocker(&vms->pac_migration_blocker, &error_fatal) < 0) {
++            exit(1);
++        }
++    }
+ 
+     possible_cpus = mc->possible_cpu_arch_ids(machine);
+     assert(possible_cpus->len == max_cpus);
+@@ -676,6 +835,20 @@ static void mach_vmapple_init(MachineState *machine)
+ 
+         object_property_set_link(cpu, "memory", OBJECT(sysmem), &error_abort);
+         qdev_realize(DEVICE(cpu), NULL, &error_fatal);
++        if (vms->pac_software_model) {
++            ARMCPU *acpu = ARM_CPU(cpu);
++            VMApplePacCPU *p = &vms->pac_cpu[n];
++            if (!cpu_isar_feature(aa64_pauth, acpu)) {
++                error_report("x-pac-software-model requires architectural PAuth");
++                exit(1);
++            }
++            p->master = vms->pac_master;
++            p->defaults = vms->pac_defaults;
++            acpu->board_hvc = vmapple_pac_hvc;
++            acpu->board_hvc_reset = vmapple_pac_cpu_reset;
++            acpu->board_hvc_opaque = p;
++            arm_register_el_change_hook(acpu, vmapple_pac_apply, p);
++        }
+         object_unref(cpu);
+     }
+ 
+@@ -789,10 +962,24 @@ static void vmapple_set_tablet(Object *obj, const char *value, Error **errp)
+     vms->tablet = g_strdup(value);
+ }
+ 
++static bool vmapple_get_pac_model(Object *obj, Error **errp)
++{
++    return VMAPPLE_MACHINE(obj)->pac_software_model;
++}
++
++static void vmapple_set_pac_model(Object *obj, bool value, Error **errp)
++{
++    VMAPPLE_MACHINE(obj)->pac_software_model = value;
++}
++
+ static void vmapple_machine_class_init(ObjectClass *oc, const void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
+ 
++    object_class_property_add_bool(oc, "x-pac-software-model",
++                                   vmapple_get_pac_model, vmapple_set_pac_model);
++    object_class_property_set_description(oc, "x-pac-software-model",
++        "Experimental TCG HVC/PAC state model (default off); not Apple crypto");
+     mc->init = mach_vmapple_init;
+     mc->max_cpus = 32;
+     mc->block_default_type = IF_VIRTIO;
+@@ -839,6 +1026,9 @@ static void vmapple_instance_finalize(Object *obj)
+ {
+     VMAppleMachineState *vms = VMAPPLE_MACHINE(obj);
+ 
++    if (vms->pac_migration_blocker) {
++        migrate_del_blocker(&vms->pac_migration_blocker);
++    }
+     g_free(vms->tablet);
+ }
+ 
+diff --git a/meson.build b/meson.build
+index 4fa0b99332..2ccf4282a2 100644
+--- a/meson.build
++++ b/meson.build
+@@ -3423,8 +3423,12 @@ foreach target : target_dirs
+     # for the host's architecture.  Use accelerator_targets as a proxy to
+     # figure out which target can support PVG on this host: HVF's on macOS,
+     # KVM's on Linux.
++    # macos-local experimental ARM-on-x86 TCG path: do not confuse this
++    # buildability switch with the guest ARM64 graphics protocol being correct.
+     if pvg.found() and (target in accelerator_targets.get('CONFIG_HVF', []) or
+-                        target in accelerator_targets.get('CONFIG_KVM', []))
++                        target in accelerator_targets.get('CONFIG_KVM', []) or
++                        (host_os == 'linux' and target == 'aarch64-softmmu'
++                         and have_tcg))
+       target_kconfig += 'CONFIG_MAC_PVG=y'
+     endif
+ 
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 2d91c6f847..07ebd56267 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -677,6 +677,9 @@ static void arm_cpu_reset_hold(Object *obj, ResetType type)
+     }
+ #endif
+ 
++    if (cpu->board_hvc_reset) {
++        cpu->board_hvc_reset(cpu, cpu->board_hvc_opaque);
++    }
+     if (tcg_enabled()) {
+         hw_breakpoint_update_all(cpu);
+         hw_watchpoint_update_all(cpu);
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index 3b541f2465..dedd7a8a23 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1054,6 +1054,13 @@ struct ArchCPU {
+      */
+     bool cpu_on_copies_pauth_keys;
+ 
++    /* Optional board-owned vendor HVC service. NULL preserves PSCI-only
++     * behavior. Service state is owned by the board, not CPU migration. */
++    bool (*board_hvc)(ARMCPU *cpu, void *opaque);
++    void (*board_hvc_reset)(ARMCPU *cpu, void *opaque);
++    void *board_hvc_opaque;
++
++
+     /* For v8M, initial value of the Secure VTOR */
+     uint32_t init_svtor;
+     /* For v8M, initial value of the Non-secure VTOR */
+diff --git a/target/arm/tcg/psci.c b/target/arm/tcg/psci.c
+index 56754bde95..81f52d9e5a 100644
+--- a/target/arm/tcg/psci.c
++++ b/target/arm/tcg/psci.c
+@@ -88,6 +88,14 @@ void arm_handle_psci_call(ARMCPU *cpu)
+         goto err;
+     }
+ 
++    /* A board may implement a vendor service on its HVC conduit.
++     * Do not expose EL1 services through SMC, EL0, or AArch32. */
++    if (is_a64(env) && arm_current_el(env) == 1 &&
++        cpu->psci_conduit == QEMU_PSCI_CONDUIT_HVC &&
++        cpu->board_hvc && cpu->board_hvc(cpu, cpu->board_hvc_opaque)) {
++        return;
++    }
++
+     switch (param[0]) {
+         CPUState *target_cpu_state;
+         ARMCPU *target_cpu;

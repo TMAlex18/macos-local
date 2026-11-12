@@ -1,0 +1,28 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 932475f..0122356 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -221,6 +221,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+ [[package]]
+ name = "metal2vulkan"
+ version = "0.2.0"
++source = "git+https://github.com/steelbrain/metal2vulkan?rev=ecb80e019d54b8eb1585974fb2a6cc37bac359cc#ecb80e019d54b8eb1585974fb2a6cc37bac359cc"
+ dependencies = [
+  "ash",
+  "metal2vulkan-air",
+@@ -231,6 +232,7 @@ dependencies = [
+ [[package]]
+ name = "metal2vulkan-air"
+ version = "0.2.0"
++source = "git+https://github.com/steelbrain/metal2vulkan?rev=ecb80e019d54b8eb1585974fb2a6cc37bac359cc#ecb80e019d54b8eb1585974fb2a6cc37bac359cc"
+ dependencies = [
+  "sha2",
+ ]
+@@ -238,6 +240,7 @@ dependencies = [
+ [[package]]
+ name = "metal2vulkan-runtime"
+ version = "0.2.0"
++source = "git+https://github.com/steelbrain/metal2vulkan?rev=ecb80e019d54b8eb1585974fb2a6cc37bac359cc#ecb80e019d54b8eb1585974fb2a6cc37bac359cc"
+ dependencies = [
+  "ash",
+  "libc",

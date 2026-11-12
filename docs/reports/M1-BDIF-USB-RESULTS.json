@@ -1,0 +1,189 @@
+{
+  "date": "2026-10-14T07:10:03.253092+00:00",
+  "phase": "M1_in_progress",
+  "scope": "synthetic ARM guest BDIF transport + userspace USB/IP EP0, not Apple restore",
+  "qemu_pin": "1a72df984914fb9929d35b1217619178133d65a4",
+  "source_worktree": "sources/qemu-bdif-usb",
+  "binary": "build/qemu-bdif-usb/qemu-system-aarch64",
+  "upstream_candidate": {
+    "repo": "steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64",
+    "commit": "657bb2423ec8d572b22a97dd33563dbba1680e6a",
+    "patch": "patches/upstream-reference/steelbrain-vmapple-usb-chardev-657bb24.patch",
+    "patch_sha256": "a336748e9531dd594a22c36d23996340e966b19f2ff00580eeebd4bad1a0f717"
+  },
+  "candidate_comparison": {
+    "passed": 2,
+    "total": 6,
+    "failures": [
+      "maximum",
+      "descriptor-boundary",
+      "oversize-for-buffer",
+      "disconnect-partial"
+    ],
+    "log": "runs/e05-bdif-usb/candidate-results.json"
+  },
+  "corrected_transport": {
+    "passed": 16,
+    "total": 16,
+    "cases": [
+      {
+        "case": "small",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "fragmented",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "coalesced",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "maximum",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "descriptor-boundary",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "oversize-for-buffer",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "preposted-data",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "no-data",
+        "guest_exit": 1,
+        "expected_exit": 1,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "invalid-data-address",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "oversize-tx",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "maximum-tx",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "disconnect-partial",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "invalid-descriptor",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "zero-length",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "oversize-frame-reconnect",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      },
+      {
+        "case": "root-aux-regression",
+        "guest_exit": 0,
+        "expected_exit": 0,
+        "passed": true,
+        "wire_exact_match": true
+      }
+    ],
+    "rx_limit": 131072,
+    "tx_limit": 4096,
+    "log": "runs/e05-bdif-usb/corrected-final-results.json"
+  },
+  "backpressure": {
+    "frames": 256,
+    "framed_bytes": 1049600,
+    "exact_bytes": true,
+    "candidate_qmp_responsive": false,
+    "corrected_qmp_responsive": true,
+    "candidate_data_eventually_correct": true,
+    "log": "runs/e05-bdif-usb/corrected-backpressure.json"
+  },
+  "usbip_control": {
+    "passed": true,
+    "scenarios": 3,
+    "checks": 12,
+    "synthetic_guest_identity": {
+      "vendor": "0xf00d",
+      "product": "0xb00b"
+    },
+    "status_fabricated": false,
+    "kernel_attached": false,
+    "log": "runs/e05-bdif-usb/control-results.json"
+  },
+  "platform_regression": {
+    "passed": 5,
+    "total": 5,
+    "log": "runs/e06-contracts-all-bdif-usb-results.json"
+  },
+  "code_patch": "patches/qemu-platform/0006-bdif-usb-framing-lifecycle.patch",
+  "patch_sha256": "6e1670202dfadf8515af84c7eb66ac4c947cd65e958db8296f21bd0d403c2970",
+  "not_done": [
+    "matching AVPBooter",
+    "real Apple firmware request/response",
+    "kernel USB/IP attachment",
+    "signed DFU restoration",
+    "initialized AUX/identity/OS disk",
+    "macOS boot"
+  ],
+  "known_limits": [
+    "one outstanding transport descriptor, no descriptor chain",
+    "sequential EP0 only, no USBIP UNLINK/DEVLIST/ISO",
+    "mid-stream reset/peer generation and migration unqualified",
+    "wire ABI derived from older prototype, not verified for macOS27"
+  ],
+  "documentation": "docs/reports/M1-BDIF-USB-TRANSPORT.md"
+}

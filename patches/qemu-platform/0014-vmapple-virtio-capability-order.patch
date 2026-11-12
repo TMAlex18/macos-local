@@ -1,0 +1,49 @@
+diff --git a/hw/vmapple/virtio-blk.c b/hw/vmapple/virtio-blk.c
+index 9de9aaae0b..4c83c2cc27 100644
+--- a/hw/vmapple/virtio-blk.c
++++ b/hw/vmapple/virtio-blk.c
+@@ -125,6 +125,8 @@ static void vmapple_virtio_blk_pci_realize(VirtIOPCIProxy *vpci_dev, Error **err
+     VMAppleVirtIOBlkPCI *dev = VMAPPLE_VIRTIO_BLK_PCI(vpci_dev);
+     DeviceState *vdev = DEVICE(&dev->vdev);
+     VirtIOBlkConf *conf = &dev->vdev.parent_obj.conf;
++    uint8_t *config = vpci_dev->pci_dev.config;
++    unsigned int cap, next, prev;
+ 
+     if (dev->variant == VM_APPLE_VIRTIO_BLK_VARIANT_UNSPECIFIED) {
+         error_setg(errp, "vmapple virtio block device variant unspecified");
+@@ -152,7 +154,9 @@ static void vmapple_virtio_blk_pci_realize(VirtIOPCIProxy *vpci_dev, Error **err
+     /* Propagate the apple type down to the virtio-blk device */
+     dev->vdev.apple_type = dev->variant;
+     /* and spawn the virtio-blk device */
+-    qdev_realize(vdev, BUS(&vpci_dev->bus), errp);
++    if (!qdev_realize(vdev, BUS(&vpci_dev->bus), errp)) {
++        return;
++    }
+ 
+     /*
+      * The virtio-pci machinery adjusts its vendor/device ID based on whether
+@@ -162,6 +166,24 @@ static void vmapple_virtio_blk_pci_realize(VirtIOPCIProxy *vpci_dev, Error **err
+     pci_config_set_vendor_id(vpci_dev->pci_dev.config, PCI_VENDOR_ID_APPLE);
+     pci_config_set_device_id(vpci_dev->pci_dev.config,
+                              PCI_DEVICE_ID_APPLE_VIRTIO_BLK);
++
++    /*
++     * Apple's cached capability iterator advances by configuration offset,
++     * while its fallback follows the linked list. Keep both orders consistent
++     * without moving capabilities or changing their payloads.
++     */
++    cap = config[PCI_CAPABILITY_LIST];
++    config[PCI_CAPABILITY_LIST] = 0;
++    while (cap) {
++        next = config[cap + PCI_CAP_LIST_NEXT];
++        prev = PCI_CAPABILITY_LIST;
++        while (config[prev] && config[prev] < cap) {
++            prev = config[prev] + PCI_CAP_LIST_NEXT;
++        }
++        config[cap + PCI_CAP_LIST_NEXT] = config[prev];
++        config[prev] = cap;
++        cap = next;
++    }
+ }
+ 
+ static void vmapple_virtio_blk_pci_class_init(ObjectClass *klass,

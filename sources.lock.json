@@ -1,0 +1,39 @@
+{
+  "lock_version": 1,
+  "survey_date": "2026-10-14",
+  "upstreams": {
+    "reims": {
+      "url": "https://github.com/steelbrain/reims-vgpu.git",
+      "revision": "86d492197228df29514a87c3de62b2ce59f2188f",
+      "path": "sources/reims",
+      "note": "Modern graphics baseline; nested QEMU submodule."
+    },
+    "reims-qemu": {
+      "url": "https://github.com/steelbrain/qemu-reims-vgpu.git",
+      "revision": "1a72df984914fb9929d35b1217619178133d65a4",
+      "path": "sources/reims/vendor/qemu",
+      "note": "Pinned submodule; not interchangeable with portable fork."
+    },
+    "metal2vulkan": {
+      "url": "https://github.com/steelbrain/metal2vulkan.git",
+      "revision": "ecb80e019d54b8eb1585974fb2a6cc37bac359cc",
+      "path": "Cargo git dependency",
+      "note": "Resolve only when needed, pinned by Reims manifest."
+    },
+    "qemu-portable": {
+      "url": "https://github.com/imbushuo/qemu.git",
+      "revision": "e1aa708569a0de3fbc95fa1ac1836b0ae0a9e96e",
+      "path": "sources/qemu-portable",
+      "note": "TCG-capable VMApple fork; used for the GPU-less VMApple control (patch 0001) and the ARM virt diagnostic build. Its legacy Reims Cargo glue is not used (docs/reports/INTEGRATION_NOTES.md)."
+    }
+  },
+  "guest_media": null,
+  "validation": "Pinned upstream checkouts verified by tools/fetch-sources.sh and tools/check-research-patches.py. Current status and milestones: docs/STATUS.md and docs/RESULTS.md.",
+  "plan_version": 3,
+  "active_integration": {
+    "qemu": "sources/qemu-bdif-usb",
+    "reims": "sources/reims-arm-guest",
+    "binary": "build/qemu-bdif-usb/qemu-system-aarch64",
+    "role": "Active mainline VMApple + TCG + Reims ARM 16 KiB integration"
+  }
+}

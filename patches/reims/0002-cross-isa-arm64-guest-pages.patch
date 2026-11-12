@@ -1,0 +1,177 @@
+diff --git a/crates/reims-vgpu-c/Cargo.toml b/crates/reims-vgpu-c/Cargo.toml
+index c744ea8..511803e 100644
+--- a/crates/reims-vgpu-c/Cargo.toml
++++ b/crates/reims-vgpu-c/Cargo.toml
+@@ -14,6 +14,8 @@ license.workspace = true
+ crate-type = ["cdylib", "staticlib", "rlib"]
+ 
+ [features]
++# Propagate the guest ABI page-size choice, independent from host architecture.
++arm64-guest-pages = ["reims-vgpu-core/arm64-guest-pages"]
+ default = ["macos-sdl"]
+ # SDL3's window on macOS (`reims-vgpu`'s `macos-sdl`), on by default: `--no-default-features`
+ # builds the macOS library without SDL, its windows AppKit's alone.
+diff --git a/crates/reims-vgpu-core/Cargo.toml b/crates/reims-vgpu-core/Cargo.toml
+index d726c94..7b0dcf1 100644
+--- a/crates/reims-vgpu-core/Cargo.toml
++++ b/crates/reims-vgpu-core/Cargo.toml
+@@ -8,6 +8,8 @@ publish.workspace = true
+ license.workspace = true
+ 
+ [features]
++# Experimental: x86_64 host serving a 16KiB-page ARM64 guest protocol.
++arm64-guest-pages = []
+ # core::testkit and testkit::capture outside this crate's own unit tests (architecture 13.2).
+ testkit = []
+ 
+diff --git a/crates/reims-vgpu-core/src/display/guest_display.rs b/crates/reims-vgpu-core/src/display/guest_display.rs
+index fa75b3f..3948c9a 100644
+--- a/crates/reims-vgpu-core/src/display/guest_display.rs
++++ b/crates/reims-vgpu-core/src/display/guest_display.rs
+@@ -41,7 +41,7 @@
+ /// Dies unless the `width` bytes at `colorMatrices[matrix][row][col]` lie inside the page
+ /// ([`page::color_matrix_in_page`](crate::display::page::color_matrix_in_page)): on x86-64 an
+ /// access past the 4 KiB page ends the process at that access, before it is made.
+-#[cfg(target_arch = "x86_64")]
++#[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+ macro_rules! color_matrix_access {
+     ($matrix:expr, $row:expr, $col:expr, $width:expr) => {
+         $crate::fatal_unless!(
+@@ -52,7 +52,7 @@ macro_rules! color_matrix_access {
+ }
+ 
+ /// Nothing on arm64: the 16 KiB page holds every matrix, so no access leaves it.
+-#[cfg(not(target_arch = "x86_64"))]
++#[cfg(any(not(target_arch = "x86_64"), feature = "arm64-guest-pages"))]
+ macro_rules! color_matrix_access {
+     ($matrix:expr, $row:expr, $col:expr, $width:expr) => {};
+ }
+@@ -223,7 +223,7 @@ pub enum DeathKind {
+     FinishRestoreUnexpected,
+     /// A colour-matrix access past the page: the guest's matrix index is past the matrices a
+     /// 4 KiB page holds. x86-64 only: a 16 KiB page holds every index.
+-    #[cfg(target_arch = "x86_64")]
++    #[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+     ColorMatrixOutsidePage,
+ }
+ 
+@@ -253,7 +253,7 @@ impl DeathKind {
+             DeathKind::UnpauseRunning => "guest_display.unpause.running",
+             DeathKind::WillRestoreTwice => "guest_display.restore.twice",
+             DeathKind::FinishRestoreUnexpected => "guest_display.restore.unexpected",
+-            #[cfg(target_arch = "x86_64")]
++            #[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+             DeathKind::ColorMatrixOutsidePage => "guest_display.color_matrix.outside_page",
+         }
+     }
+@@ -269,7 +269,7 @@ impl DeathKind {
+             DeathKind::ShowHandlerGone
+             | DeathKind::MoveHandlerGone
+             | DeathKind::GlyphHandlerGone => K::NilBlock,
+-            #[cfg(target_arch = "x86_64")]
++            #[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+             DeathKind::ColorMatrixOutsidePage => K::OutOfBounds,
+             _ => K::Assert,
+         }
+diff --git a/crates/reims-vgpu-core/src/display/guest_display/tests.rs b/crates/reims-vgpu-core/src/display/guest_display/tests.rs
+index a8ceffa..afa4f40 100644
+--- a/crates/reims-vgpu-core/src/display/guest_display/tests.rs
++++ b/crates/reims-vgpu-core/src/display/guest_display/tests.rs
+@@ -1830,7 +1830,7 @@ mod color_matrix_late_read {
+ /// On x86-64 the page is 4 KiB: matrices 0-30 lie inside it, matrix 31's first two rows end at its
+ /// end, and every access past it ends the process there, before it is made. Each test sets only
+ /// bytes inside the page.
+-#[cfg(target_arch = "x86_64")]
++#[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+ mod color_matrix_outside_page {
+     use super::*;
+ 
+diff --git a/crates/reims-vgpu-core/src/display/page.rs b/crates/reims-vgpu-core/src/display/page.rs
+index 2ac5cb8..8c352be 100644
+--- a/crates/reims-vgpu-core/src/display/page.rs
++++ b/crates/reims-vgpu-core/src/display/page.rs
+@@ -223,9 +223,9 @@ mod tests {
+         assert_eq!(GUEST_ICC_PROFILE_LENGTH, 0xfd0);
+         assert_eq!(MODE_ENTRY_SIZE, 16);
+         assert_eq!(PAGE_LENGTH, crate::guest::records::APV_PAGE_SIZE);
+-        #[cfg(not(target_arch = "x86_64"))]
++        #[cfg(any(not(target_arch = "x86_64"), feature = "arm64-guest-pages"))]
+         assert_eq!(PAGE_LENGTH, 0x4000);
+-        #[cfg(target_arch = "x86_64")]
++        #[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+         assert_eq!(PAGE_LENGTH, 0x1000);
+     }
+ 
+@@ -265,7 +265,7 @@ mod tests {
+     }
+ 
+     /// A 16 KiB page holds every matrix: every access is inside
+-    #[cfg(not(target_arch = "x86_64"))]
++    #[cfg(any(not(target_arch = "x86_64"), feature = "arm64-guest-pages"))]
+     #[test]
+     fn every_color_matrix_is_in_a_16k_page() {
+         assert!(color_matrix(255, 2, 3) + 4 <= PAGE_LENGTH);
+@@ -277,7 +277,7 @@ mod tests {
+ 
+     /// A 4 KiB page holds matrices 0-30 whole and the first 32 bytes of matrix 31 (its rows 0
+     /// and 1); every access past those is outside
+-    #[cfg(target_arch = "x86_64")]
++    #[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+     #[test]
+     fn a_4k_page_ends_in_matrix_31() {
+         assert_eq!(color_matrix(30, 2, 3) + 4, 0xfe0);
+diff --git a/crates/reims-vgpu-core/src/guest/records.rs b/crates/reims-vgpu-core/src/guest/records.rs
+index 9b6d04f..55a4d48 100644
+--- a/crates/reims-vgpu-core/src/guest/records.rs
++++ b/crates/reims-vgpu-core/src/guest/records.rs
+@@ -22,7 +22,12 @@ use crate::num::Truncate;
+ /// serves arm64 guests, an x86-64 build x86-64 ones (core's tests also run as x86-64 under
+ /// Rosetta on a Mac). Every page number the guest hands the device counts these pages. Name is
+ /// ours: the shift of `APV_PAGE_SIZE`.
+-pub const APV_PAGE_SHIFT: u32 = if cfg!(target_arch = "x86_64") { 12 } else { 14 };
++pub const APV_PAGE_SHIFT: u32 =
++    if cfg!(feature = "arm64-guest-pages") || !cfg!(target_arch = "x86_64") {
++        14
++    } else {
++        12
++    };
+ 
+ /// `APV_PAGE_SIZE`: the guest page size, 16 KiB (4 KiB on x86-64).
+ pub const APV_PAGE_SIZE: u64 = 1_u64.wrapping_shl(APV_PAGE_SHIFT);
+@@ -523,9 +528,9 @@ mod tests {
+ 
+     /// On arm64 every guest-page constant derived from `APV_PAGE_SHIFT` keeps the value its
+     /// 16 KiB literal had
+-    #[cfg(target_arch = "aarch64")]
++    #[cfg(any(target_arch = "aarch64", feature = "arm64-guest-pages"))]
+     #[test]
+-    fn guest_page_constants_keep_their_16k_values_on_aarch64() {
++    fn guest_page_constants_keep_their_16k_values_on_arm64_guest() {
+         use crate::{device::root, display, fifo::ring, memory::page_table};
+         assert_eq!(APV_PAGE_SHIFT, 14);
+         assert_eq!(APV_PAGE_SIZE, 0x4000);
+@@ -542,7 +547,7 @@ mod tests {
+ 
+     /// On x86-64 the guest's pages are 4 KiB: a page table is 1024 entries of 4 KiB page numbers,
+     /// and the display state page's mapping is one of them
+-    #[cfg(target_arch = "x86_64")]
++    #[cfg(all(target_arch = "x86_64", not(feature = "arm64-guest-pages")))]
+     #[test]
+     fn guest_page_constants_are_4k_on_x86_64() {
+         use crate::{device::root, display, fifo::ring, memory::page_table};
+diff --git a/xtask/src/dist.rs b/xtask/src/dist.rs
+index 6919d0b..faa5554 100644
+--- a/xtask/src/dist.rs
++++ b/xtask/src/dist.rs
+@@ -143,6 +143,11 @@ pub fn c_api_args(o: &Options) -> Vec<String> {
+         "--lib",
+     ]);
+     args.extend(strs(o.platform.features()));
++    // Experimental macos-local cross-ISA mode. The guest's APV pages are
++    // ARM64-sized while this builder and its Vulkan driver run on x86_64.
++    if std::env::var("MACOS_LOCAL_ARM64_GUEST").as_deref() == Ok("1") {
++        args.extend(strs(&["--features", "reims-vgpu-c/arm64-guest-pages"]));
++    }
+     args
+ }
+ 

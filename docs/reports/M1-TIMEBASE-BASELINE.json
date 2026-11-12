@@ -1,0 +1,115 @@
+{
+  "recorded_at": "2026-10-14T06:42:42.175094+00:00",
+  "scope": "observed static firmware/DeviceTree and existing timer baseline, no Apple code execution",
+  "source_commit_before_maintenance": "22fd139",
+  "firmware_component_count": 5,
+  "firmware_range_bytes": 1760833,
+  "apple_signature_verified": false,
+  "whole_ipsw_downloaded": false,
+  "apple_firmware_executed": false,
+  "dtree_nodes": 139,
+  "dtree_properties": 1272,
+  "dtree_timebase_hz": [
+    24000000
+  ],
+  "dtree_cpu_template_count": 32,
+  "clock_samples": [
+    {
+      "requested_hz": "default",
+      "samples": [
+        {
+          "trial": 0,
+          "counter_reported_hz": 1000000000,
+          "ticks": 750000026,
+          "guest_seconds": 0.750000026,
+          "host_seconds": 0.7501253310474567,
+          "guest_time_over_host_time": 0.9998329545180381
+        },
+        {
+          "trial": 1,
+          "counter_reported_hz": 1000000000,
+          "ticks": 750000034,
+          "guest_seconds": 0.750000034,
+          "host_seconds": 0.750074848998338,
+          "guest_time_over_host_time": 0.9999002566231385
+        },
+        {
+          "trial": 2,
+          "counter_reported_hz": 1000000000,
+          "ticks": 750000000,
+          "guest_seconds": 0.75,
+          "host_seconds": 0.750004303001333,
+          "guest_time_over_host_time": 0.9999942626978061
+        }
+      ],
+      "median_guest_time_over_host_time": 0.9999002566231385
+    },
+    {
+      "requested_hz": 24000000,
+      "samples": [
+        {
+          "trial": 0,
+          "counter_reported_hz": 24000000,
+          "ticks": 18000000,
+          "guest_seconds": 0.75,
+          "host_seconds": 0.7381380929728039,
+          "guest_time_over_host_time": 1.0160700377613938
+        },
+        {
+          "trial": 1,
+          "counter_reported_hz": 24000000,
+          "ticks": 18000000,
+          "guest_seconds": 0.75,
+          "host_seconds": 0.7381108590052463,
+          "guest_time_over_host_time": 1.016107527547795
+        },
+        {
+          "trial": 2,
+          "counter_reported_hz": 24000000,
+          "ticks": 18000000,
+          "guest_seconds": 0.75,
+          "host_seconds": 0.738132790022064,
+          "guest_time_over_host_time": 1.0160773374904282
+        }
+      ],
+      "median_guest_time_over_host_time": 1.0160773374904282
+    },
+    {
+      "requested_hz": 25000000,
+      "samples": [
+        {
+          "trial": 0,
+          "counter_reported_hz": 25000000,
+          "ticks": 18750001,
+          "guest_seconds": 0.75000004,
+          "host_seconds": 0.750129996042233,
+          "guest_time_over_host_time": 0.9998267553051889
+        },
+        {
+          "trial": 1,
+          "counter_reported_hz": 25000000,
+          "ticks": 18750000,
+          "guest_seconds": 0.75,
+          "host_seconds": 0.7500936749856919,
+          "guest_time_over_host_time": 0.9998751156171345
+        },
+        {
+          "trial": 2,
+          "counter_reported_hz": 25000000,
+          "ticks": 18750000,
+          "guest_seconds": 0.75,
+          "host_seconds": 0.7501373740378767,
+          "guest_time_over_host_time": 0.9998168681595783
+        }
+      ],
+      "median_guest_time_over_host_time": 0.9998267553051889
+    }
+  ],
+  "exact_clock_fix_tested": false,
+  "references": [
+    "runs/e05-source-audit/im4p-small-firmware-audit.json",
+    "runs/e05-source-audit/27-vmapple-dtree-contracts.json",
+    "runs/e05-source-audit/27-adt-vs-qemu-mtree.json",
+    "runs/e06-contracts-clock-rate.json"
+  ]
+}

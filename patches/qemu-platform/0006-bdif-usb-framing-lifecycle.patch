@@ -1,0 +1,349 @@
+diff --git a/hw/vmapple/bdif.c b/hw/vmapple/bdif.c
+--- a/hw/vmapple/bdif.c
++++ b/hw/vmapple/bdif.c
+@@ -32,6 +32,9 @@
+     MemoryRegion mmio;
+     CharFrontend usbdev;
+     GByteArray *usb_input;
++    GByteArray *usb_output;
++    guint usb_tx_watch;
++    bool usb_tx_ready;
+     uint32_t usb_queue;
+     bool usb_rx_ready;
+     bool usb_rx_posted;
+@@ -85,6 +88,8 @@
+ #define VBLK_RET_SUCCESS  0
+ #define VBLK_RET_FAILED   1
+ 
++static void vusb_try_deliver(VMAppleBdifState *s);
++
+ static uint64_t bdif_read(void *opaque, hwaddr offset, unsigned size)
+ {
+     VMAppleBdifState *s = opaque;
+@@ -93,10 +98,14 @@
+ 
+     switch (offset & ~REG_DEVID_MASK) {
+     case REG_STATUS:
+-        ret = REG_STATUS_ACTIVE;
++        ret = devid == DEVID_USB ?
++              (qemu_chr_fe_backend_open(&s->usbdev) ? REG_STATUS_ACTIVE : 0) :
++              REG_STATUS_ACTIVE;
+         break;
+     case REG_CFG:
+-        ret = devid == DEVID_USB ? REG_CFG_USB : REG_CFG_ACTIVE;
++        ret = devid == DEVID_USB ?
++              (qemu_chr_fe_backend_connected(&s->usbdev) ? REG_CFG_USB : 0) :
++              REG_CFG_ACTIVE;
+         break;
+     case REG_UNK1:
+         ret = 0x420;
+@@ -106,8 +115,11 @@
+             ret = s->usb_rx_ready ? REG_BUSY_READY : 0;
+             if (s->usb_rx_ready) {
+                 s->usb_rx_posted = false;
++                s->usb_rx_ready = false;
++                qemu_chr_fe_accept_input(&s->usbdev);
+             }
+-            s->usb_rx_ready = false;
++        } else if (devid == DEVID_USB) {
++            ret = s->usb_queue == 1 && s->usb_tx_ready ? REG_BUSY_READY : 0;
+         } else {
+             ret = REG_BUSY_READY;
+         }
+@@ -227,108 +239,176 @@
+ } QEMU_PACKED VUsbDesc;
+ 
+ #define VUSB_MAX_PACKET  (128 * KiB)
++#define VUSB_MAX_FRAME   (VUSB_MAX_PACKET + sizeof(uint32_t))
++#define VUSB_MAX_TX      4096
++
++/* Derived from the pinned steelbrain transport prototype; local corrections
++ * preserve its length-prefixed framing. This is not an Apple ABI guarantee. */
++static void vusb_clear(VMAppleBdifState *s)
++{
++    if (s->usb_tx_watch) {
++        g_source_remove(s->usb_tx_watch);
++        s->usb_tx_watch = 0;
++    }
++    g_byte_array_set_size(s->usb_input, 0);
++    g_byte_array_set_size(s->usb_output, 0);
++    s->usb_rx_ready = s->usb_rx_posted = s->usb_tx_ready = false;
++    s->usb_rx_addr = 0;
++    s->usb_rx_len = 0;
++    s->usb_queue = 0;
++}
+ 
+ static void vusb_try_deliver(VMAppleBdifState *s)
+ {
+-    uint32_t len;
+-    MemTxResult dma_result;
+-
+-    if (!s->usb_rx_posted || s->usb_rx_ready || s->usb_input->len < 4) {
++    /* Discard a complete frame that does not fit, then inspect subsequent
++     * buffered frames. Stop after one successful delivery per descriptor. */
++    while (s->usb_input->len >= sizeof(uint32_t)) {
++        uint32_t len = ldl_le_p(s->usb_input->data);
++        if (len > VUSB_MAX_PACKET) {
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "vmapple-bdif: oversized USB frame %u; disconnect\n", len);
++            vusb_clear(s);
++            qemu_chr_fe_disconnect(&s->usbdev);
++            return;
++        }
++        if (!s->usb_rx_posted || s->usb_rx_ready ||
++            s->usb_input->len < sizeof(uint32_t) + len) {
++            return;
++        }
++        if (len > s->usb_rx_len) {
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "vmapple-bdif: packet %u exceeds descriptor %u\n",
++                          len, s->usb_rx_len);
++            g_byte_array_remove_range(s->usb_input, 0, sizeof(uint32_t) + len);
++            continue;
++        }
++        MemTxResult result = dma_memory_write(&address_space_memory,
++                           s->usb_rx_addr, s->usb_input->data + sizeof(uint32_t),
++                           len, MEMTXATTRS_UNSPECIFIED);
++        g_byte_array_remove_range(s->usb_input, 0, sizeof(uint32_t) + len);
++        if (result == MEMTX_OK) {
++            s->usb_rx_ready = true;
++        } else {
++            qemu_log_mask(LOG_GUEST_ERROR, "vmapple-bdif: USB RX DMA failed\n");
++            s->usb_rx_posted = false;
++        }
+         return;
+     }
+-
+-    memcpy(&len, s->usb_input->data, sizeof(len));
+-    len = le32_to_cpu(len);
+-    if (len > VUSB_MAX_PACKET) {
+-        qemu_log_mask(LOG_GUEST_ERROR,
+-                      "vmapple-bdif: oversized USB packet: %u\n", len);
+-        g_byte_array_set_size(s->usb_input, 0);
++}
++
++static int vusb_can_receive(void *opaque)
++{
++    VMAppleBdifState *s = opaque;
++    /* Include the 4-byte frame length; 128 KiB payload is not 128 KiB wire. */
++    return VUSB_MAX_FRAME - MIN(s->usb_input->len, VUSB_MAX_FRAME);
++}
++
++static void vusb_receive(void *opaque, const uint8_t *buf, int size)
++{
++    VMAppleBdifState *s = opaque;
++    if (size < 0 || size > vusb_can_receive(s)) {
++        vusb_clear(s);
++        qemu_chr_fe_disconnect(&s->usbdev);
+         return;
+     }
+-    if (s->usb_input->len < sizeof(len) + len) {
+-        return;
+-    }
+-    if (len > s->usb_rx_len) {
+-        qemu_log_mask(LOG_GUEST_ERROR,
+-                      "vmapple-bdif: USB packet %u exceeds guest buffer %u\n",
+-                      len, s->usb_rx_len);
+-        g_byte_array_remove_range(s->usb_input, 0, sizeof(len) + len);
+-        return;
+-    }
+-
+-    dma_result = dma_memory_write(&address_space_memory, s->usb_rx_addr,
+-                                  s->usb_input->data + sizeof(len), len,
+-                                  MEMTXATTRS_UNSPECIFIED);
+-    if (dma_result == MEMTX_OK) {
+-        s->usb_rx_ready = true;
+-    }
+-    g_byte_array_remove_range(s->usb_input, 0, sizeof(len) + len);
+-}
+-
+-static int vusb_can_receive(void *opaque)
+-{
+-    VMAppleBdifState *s = opaque;
+-
+-    return VUSB_MAX_PACKET - MIN(s->usb_input->len, VUSB_MAX_PACKET);
+-}
+-
+-static void vusb_receive(void *opaque, const uint8_t *buf, int size)
+-{
+-    VMAppleBdifState *s = opaque;
+-
+     g_byte_array_append(s->usb_input, buf, size);
+     vusb_try_deliver(s);
+ }
+ 
++static gboolean vusb_tx_callback(void *channel, GIOCondition condition,
++                                 void *opaque);
++
++static void vusb_flush_tx(VMAppleBdifState *s)
++{
++    if (!qemu_chr_fe_backend_open(&s->usbdev)) {
++        g_byte_array_set_size(s->usb_output, 0);
++        s->usb_tx_ready = false;
++        return;
++    }
++    while (s->usb_output->len) {
++        int sent = qemu_chr_fe_write(&s->usbdev, s->usb_output->data,
++                                     s->usb_output->len);
++        if (sent <= 0) {
++            if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
++                qemu_chr_fe_disconnect(&s->usbdev);
++                return;
++            }
++            if (!s->usb_tx_watch) {
++                s->usb_tx_watch = qemu_chr_fe_add_watch(&s->usbdev,
++                              G_IO_OUT | G_IO_HUP, vusb_tx_callback, s);
++            }
++            return;
++        }
++        g_byte_array_remove_range(s->usb_output, 0, sent);
++    }
++    s->usb_tx_ready = true;
++}
++
++static gboolean vusb_tx_callback(void *channel, GIOCondition condition,
++                                 void *opaque)
++{
++    VMAppleBdifState *s = opaque;
++    s->usb_tx_watch = 0;
++    if (condition & G_IO_HUP) {
++        g_byte_array_set_size(s->usb_output, 0);
++        s->usb_tx_ready = false;
++    } else {
++        vusb_flush_tx(s);
++    }
++    return G_SOURCE_REMOVE;
++}
++
++static void vusb_event(void *opaque, QEMUChrEvent event)
++{
++    VMAppleBdifState *s = opaque;
++    if (event == CHR_EVENT_CLOSED || event == CHR_EVENT_OPENED) {
++        /* Never splice a partial frame from one connection into the next. */
++        vusb_clear(s);
++    }
++}
++
+ static void vusb_cmd(VMAppleBdifState *s, uint64_t gp_addr)
+ {
+-    uint64_t words[16];
+     VUsbDesc desc;
+-    MemTxResult dma_result;
+-    unsigned i;
+-
+-    dma_result = dma_memory_read(&address_space_memory, gp_addr, words,
+-                                 sizeof(words), MEMTXATTRS_UNSPECIFIED);
+-    trace_bdif_usb_cmd(gp_addr, dma_result);
+-    if (dma_result != MEMTX_OK) {
++    /* Only the descriptor is required, not the candidate's 128-byte debug
++     * dump. A valid 16-byte descriptor may end at the RAM boundary. */
++    MemTxResult result = dma_memory_read(&address_space_memory, gp_addr,
++                              &desc, sizeof(desc), MEMTXATTRS_UNSPECIFIED);
++    trace_bdif_usb_cmd(gp_addr, result);
++    if (result != MEMTX_OK) {
+         return;
+     }
+-
+-    for (i = 0; i < ARRAY_SIZE(words); i++) {
+-        trace_bdif_usb_word(i * sizeof(words[i]), le64_to_cpu(words[i]));
+-    }
+-
+-    memcpy(&desc, words, sizeof(desc));
+     desc.addr = le64_to_cpu(desc.addr);
+     desc.len = le32_to_cpu(desc.len);
+     desc.next = le16_to_cpu(desc.next);
+     desc.flags = le16_to_cpu(desc.flags);
+-
+     if (s->usb_queue == 0) {
++        if (desc.len > VUSB_MAX_PACKET || s->usb_rx_posted) {
++            return;
++        }
+         s->usb_rx_addr = desc.addr;
+         s->usb_rx_len = desc.len;
+         s->usb_rx_posted = true;
+         vusb_try_deliver(s);
+-    } else if (s->usb_queue == 1 && desc.len <= 4096) {
+-        g_autofree uint8_t *buf = g_malloc0(desc.len);
+-
+-        if (dma_memory_read(&address_space_memory, desc.addr, buf, desc.len,
+-                            MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+-            uint32_t wire_len = cpu_to_le32(desc.len);
+-
+-            for (i = 0; i < DIV_ROUND_UP(desc.len, sizeof(uint64_t)); i++) {
+-                uint64_t word = 0;
+-                size_t chunk = MIN(sizeof(word), desc.len - i * sizeof(word));
+-
+-                memcpy(&word, buf + i * sizeof(word), chunk);
+-                trace_bdif_usb_word(i * sizeof(word), le64_to_cpu(word));
+-            }
+-            if (qemu_chr_fe_backend_connected(&s->usbdev)) {
+-                qemu_chr_fe_write_all(&s->usbdev, (uint8_t *)&wire_len,
+-                                      sizeof(wire_len));
+-                qemu_chr_fe_write_all(&s->usbdev, buf, desc.len);
+-            }
+-        }
++        qemu_chr_fe_accept_input(&s->usbdev);
++    } else if (s->usb_queue == 1) {
++        if (s->usb_output->len) {
++            return; /* One bounded outstanding send; do not replace its bytes. */
++        }
++        s->usb_tx_ready = false;
++        if (desc.len > VUSB_MAX_TX || !qemu_chr_fe_backend_open(&s->usbdev)) {
++            return;
++        }
++        g_byte_array_set_size(s->usb_output, desc.len + sizeof(uint32_t));
++        stl_le_p(s->usb_output->data, desc.len);
++        result = dma_memory_read(&address_space_memory, desc.addr,
++                   s->usb_output->data + sizeof(uint32_t), desc.len,
++                   MEMTXATTRS_UNSPECIFIED);
++        if (result != MEMTX_OK) {
++            g_byte_array_set_size(s->usb_output, 0);
++            return;
++        }
++        vusb_flush_tx(s);
+     }
+ }
+ 
+@@ -384,6 +464,7 @@
+                          "VMApple Backdoor Interface", VMAPPLE_BDIF_SIZE);
+     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+     s->usb_input = g_byte_array_new();
++    s->usb_output = g_byte_array_new();
+ }
+ 
+ static void bdif_realize(DeviceState *dev, Error **errp)
+@@ -392,7 +473,7 @@
+ 
+     if (qemu_chr_fe_backend_connected(&s->usbdev)) {
+         qemu_chr_fe_set_handlers(&s->usbdev, vusb_can_receive, vusb_receive,
+-                                 NULL, NULL, s, NULL, true);
++                                 vusb_event, NULL, s, NULL, true);
+     }
+ }
+ 
+@@ -400,7 +481,16 @@
+ {
+     VMAppleBdifState *s = VMAPPLE_BDIF(obj);
+ 
++    vusb_clear(s);
++    qemu_chr_fe_deinit(&s->usbdev, false);
+     g_clear_pointer(&s->usb_input, g_byte_array_unref);
++    g_clear_pointer(&s->usb_output, g_byte_array_unref);
++}
++
++static void bdif_reset_hold(Object *obj, ResetType type)
++{
++    VMAppleBdifState *s = VMAPPLE_BDIF(obj);
++    vusb_clear(s);
+ }
+ 
+ static const Property bdif_properties[] = {
+@@ -412,6 +502,8 @@
+ static void bdif_class_init(ObjectClass *klass, const void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++    rc->phases.hold = bdif_reset_hold;
+ 
+     dc->desc = "VMApple Backdoor Interface";
+     dc->realize = bdif_realize;

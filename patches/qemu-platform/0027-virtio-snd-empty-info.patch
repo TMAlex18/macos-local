@@ -1,0 +1,115 @@
+From: macos-local research
+Subject: [PATCH] Complete valid empty VirtIO sound item-info queries
+
+A device advertising zero jacks or channel maps can receive an in-range
+zero-count item-info query. Validate its full request, range and response
+capacity, then return OK without fabricating item data. Valid nonempty
+queries remain unsupported. Keep advertised counts and PCM behavior intact.
+
+Count only status bytes actually copied to a short response descriptor in
+the used-ring length. Tests replay the observed 16-byte indirect JACK_INFO
+request and exercise range, overflow, SG, short buffers and PCM consumption.
+
+VirtIO 1.3 sections 5.14.6.1, 5.14.6.2, 5.14.6.4.1 and 5.14.6.9.1:
+https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html
+A disabled-by-default trace event records accepted empty-query metadata only;
+no PCM trace format changes. Local experiment, not for upstream submission.
+
+diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
+--- a/hw/audio/virtio-snd.c
++++ b/hw/audio/virtio-snd.c
+@@ -358,6 +358,42 @@
+ }
+ 
+ /*
++ * JACK_INFO and CHMAP_INFO do not yet provide item data, but an in-range
++ * zero-count query needs only the status header, including when total is zero.
++ */
++static void virtio_snd_handle_empty_info(virtio_snd_ctrl_command *cmd,
++                                        uint32_t total)
++{
++    virtio_snd_query_info req;
++    uint32_t start_id, count, bytes;
++
++    cmd->resp.code = cpu_to_le32(VIRTIO_SND_S_BAD_MSG);
++    if (iov_to_buf(cmd->elem->out_sg, cmd->elem->out_num, 0,
++                   &req, sizeof(req)) != sizeof(req)) {
++        return;
++    }
++
++    start_id = le32_to_cpu(req.start_id);
++    count = le32_to_cpu(req.count);
++    /* Subtract only after checking start_id, so the range cannot wrap. */
++    if (start_id > total || count > total - start_id) {
++        return;
++    }
++    if (!g_uint_checked_mul(&bytes, count, le32_to_cpu(req.size)) ||
++        !g_uint_checked_add(&bytes, bytes, sizeof(virtio_snd_hdr)) ||
++        iov_size(cmd->elem->in_sg, cmd->elem->in_num) < bytes) {
++        return;
++    }
++
++    cmd->resp.code = cpu_to_le32(count ? VIRTIO_SND_S_NOT_SUPP :
++                                       VIRTIO_SND_S_OK);
++    if (!count) {
++        trace_virtio_snd_empty_info(le32_to_cpu(req.hdr.code), start_id,
++                                   count, le32_to_cpu(req.size), total);
++    }
++}
++
++/*
+  * Handle the VIRTIO_SND_R_PCM_INFO request.
+  * The function writes the info structs to the request element.
+  *
+@@ -971,6 +1007,8 @@
+ 
+     switch (code) {
+     case VIRTIO_SND_R_JACK_INFO:
++        virtio_snd_handle_empty_info(cmd, s->snd_conf.jacks);
++        break;
+     case VIRTIO_SND_R_JACK_REMAP:
+         qemu_log_mask(LOG_UNIMP,
+                      "virtio_snd: jack functionality is unimplemented.\n");
+@@ -995,10 +1033,8 @@
+         virtio_snd_handle_pcm_release(s, cmd);
+         break;
+     case VIRTIO_SND_R_CHMAP_INFO:
+-        qemu_log_mask(LOG_UNIMP,
+-                     "virtio_snd: chmap info functionality is unimplemented.\n");
+         trace_virtio_snd_handle_chmap_info();
+-        cmd->resp.code = cpu_to_le32(VIRTIO_SND_S_NOT_SUPP);
++        virtio_snd_handle_empty_info(cmd, s->snd_conf.chmaps);
+         break;
+     default:
+         /* error */
+@@ -1020,13 +1056,13 @@
+         }
+     }
+ 
+-    iov_from_buf(cmd->elem->in_sg,
+-                 cmd->elem->in_num,
+-                 0,
+-                 &cmd->resp,
+-                 sizeof(virtio_snd_hdr));
++    msg_sz = iov_from_buf(cmd->elem->in_sg,
++                          cmd->elem->in_num,
++                          0,
++                          &cmd->resp,
++                          sizeof(virtio_snd_hdr));
+     virtqueue_push(cmd->vq, cmd->elem,
+-                   sizeof(virtio_snd_hdr) + cmd->payload_size);
++                   msg_sz + cmd->payload_size);
+     g_assert(s->queue_inuse[VIRTIO_SND_VQ_CONTROL] > 0);
+     s->queue_inuse[VIRTIO_SND_VQ_CONTROL] -= 1;
+     virtio_notify(VIRTIO_DEVICE(s), cmd->vq);
+diff --git a/hw/audio/trace-events b/hw/audio/trace-events
+--- a/hw/audio/trace-events
++++ b/hw/audio/trace-events
+@@ -56,6 +56,7 @@
+ virtio_snd_handle_pcm_start_stop(const char *code, uint32_t stream) "%s called for stream %"PRIu32
+ virtio_snd_handle_pcm_release(uint32_t stream) "VIRTIO_SND_PCM_RELEASE called for stream %"PRIu32
+ virtio_snd_handle_code(uint32_t val, const char *code) "ctrl code msg val = %"PRIu32" == %s"
++virtio_snd_empty_info(uint32_t code, uint32_t start_id, uint32_t count, uint32_t size, uint32_t total) "code=%"PRIu32" start_id=%"PRIu32" count=%"PRIu32" size=%"PRIu32" total=%"PRIu32
+ virtio_snd_handle_chmap_info(void) "VIRTIO_SND_CHMAP_INFO called"
+ virtio_snd_handle_event(void) "event queue callback called"
+ virtio_snd_pcm_stream_flush(uint32_t stream) "flushing stream %"PRIu32

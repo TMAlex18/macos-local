@@ -1,0 +1,92 @@
+# Licensing, Source-Available Non-Commercial Scope, and Legal Notices
+
+This repository is an experimental **Research Proof-of-Concept (PoC)** for
+cross-ISA system virtualization and graphics protocol interoperability. It is
+**not** an end-user product, turnkey installer, or production virtual machine
+monitor.
+
+Because this workspace combines patches to existing free/open-source upstreams
+with independent research harnesses, bare-metal test firmware, and technical
+documentation, different directories are governed by distinct license terms as
+specified below. Full canonical license texts are provided in `LICENSES/`.
+
+---
+
+## 1. Upstream Patches (`patches/`) — Governed by Upstream Licenses
+
+Modifications to third-party open-source projects under `patches/` are
+distributed strictly under each upstream project's original license, with **no
+additional restrictions** beyond those licenses:
+
+- **`patches/qemu-platform/`** (for QEMU):
+  GNU General Public License, version 2 only (**`GPL-2.0-only`**) — see
+  `LICENSES/GPL-2.0-only.txt`. Original upstream copyright notices and patch
+  authorship headers are preserved.
+- **`patches/reims/`** and **`patches/metal2vulkan/`** (for `reims-vgpu` and
+  `metal2vulkan`):
+  Dual-licensed under GNU General Public License version 2 or later
+  (**`GPL-2.0-or-later`**) OR GNU Lesser General Public License version 3 or
+  later (**`LGPL-3.0-or-later`**), at your option — see
+  `LICENSES/GPL-2.0-or-later.txt`, `LICENSES/GPL-3.0.txt`, and
+  `LICENSES/LGPL-3.0-or-later.txt`. (When linked into the `GPL-2.0-only` QEMU
+  executable, the `GPL-2.0` option applies.)
+- **External reference patch (`patches/upstream-reference/`):**
+  Anees Iqbal's reference `vmapple-usb-chardev.patch` from
+  `steelbrain/experiment-macOS-arm64-on-asahi-linux-arm64` (commit `657bb24`) is
+  not relicensed by this project; public snapshots do not redistribute its patch
+  text and instead fetch it directly from its pinned upstream commit via
+  `./tools/fetch-sources.sh`.
+
+---
+
+## 2. Original PoC Code, Bare-Metal Probes, Tools & Documentation — Source-Available, Noncommercial Only
+
+All original files authored by this project outside `patches/` — including
+self-authored probes, harnesses, test suites, build scripts, `Makefile`,
+`sources.lock.json`, `docs/`, and `README*` — are **source-available**
+under the **PolyForm Noncommercial License 1.0.0**
+(`LICENSES/PolyForm-Noncommercial-1.0.0.txt`,
+<https://polyformproject.org/licenses/noncommercial/1.0.0>). Note that
+PolyForm Noncommercial is a source-available non-commercial license, not an
+OSI-approved open-source license.
+
+Pursuant to the *Notices* section of the PolyForm Noncommercial License 1.0.0,
+every copy or redistribution of any part of these original materials must
+retain the following required notices verbatim:
+
+Required Notice: Copyright (c) 2026 macos-local research contributors. Licensed under the PolyForm Noncommercial License 1.0.0 (<https://polyformproject.org/licenses/noncommercial/1.0.0>). Commercial use, commercial distribution, sale, paid installation/configuration service, commercial bundling, or commercial cloud/compute hosting of these PolyForm-licensed materials is not permitted under this license.
+
+Required Notice: Non-Endorsement and Anti-Commercialization — Neither the name of this repository nor the identifiers of its contributors may be used to endorse, promote, advertise, or imply affiliation with any derivative software, prebuilt image, hardware bundle, or third-party service without prior written permission. The contributors have authorized NO commercial party to sell, host, or support these PolyForm-licensed proof-of-concept materials.
+
+Required Notice: Experimental Research PoC Disclaimer — Provided strictly "AS IS" without warranty of any kind. This software does NOT provide a security boundary or isolation sandbox, and abnormal termination may corrupt virtual disk state. All execution risks rest solely with the user.
+
+### Upstream Free-Software Contribution Carve-Out
+
+To avoid impeding upstream open-source collaboration where upstream policies
+permit, maintainers of the open-source projects patched in Section 1 (`QEMU`,
+`reims-vgpu`, `metal2vulkan`) are additionally granted
+permission to incorporate self-authored, Apple-code-free platform tests or build
+helpers from this repository into their respective official open-source
+repositories under those projects' existing open-source licenses. This carve-out
+grants **no** rights for closed-source or standalone commercial redistribution.
+
+---
+
+## 3. Zero Proprietary Material, Trademarks & User Compliance Notice
+
+1. **Zero Proprietary Binaries or Keys:** Public snapshots of this repository
+   contain **zero** Apple firmware, ROMs, OS images, cryptographic keys, signing
+   tickets, SDK headers, or virtual disk images. No prebuilt VM bundles or
+   extracted Apple components are distributed.
+2. **User License Responsibility (BYOF):** Users who choose to test with
+   third-party operating systems or firmware must obtain those materials
+   lawfully on their own and are solely responsible for complying with all
+   applicable end-user software license agreements (SLAs/EULAs) and local laws.
+3. **Trademarks & Non-Affiliation:** Apple, macOS, Mac, Metal, Safari, WebKit,
+   CoreAudio, and Virtualization are trademarks of Apple Inc., registered in
+   the U.S. and other countries. Linux is the registered trademark of Linus
+   Torvalds. Vulkan is a registered trademark of the Khronos Group Inc. All
+   product and company names are mentioned strictly for nominative,
+   interoperability, and identification purposes. This research project is
+   **not** affiliated with, endorsed by, or sponsored by Apple Inc. or any
+   other trademark holder.

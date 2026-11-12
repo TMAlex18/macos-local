@@ -1,0 +1,49 @@
+diff --git a/hw/vmapple/Kconfig b/hw/vmapple/Kconfig
+index 42e1f83..9a687fc 100644
+--- a/hw/vmapple/Kconfig
++++ b/hw/vmapple/Kconfig
+@@ -31,5 +31,5 @@ config VMAPPLE
+     select VMAPPLE_BDIF
+     select VMAPPLE_CFG
+     imply MAC_PVG_MMIO
+-    select REIMS_VGPU
++    # Research: vGPU optional for independent CPU/device smoke tests.
+     select VMAPPLE_VIRTIO_BLK
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+index 63714e9..26db72e 100644
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -584,7 +584,9 @@ static void mach_vmapple_init(MachineState *machine)
+     create_bdif(vms, sysmem);
+     create_pvpanic(vms, sysmem);
+     create_aes(vms, sysmem);
+-    create_gfx(vms, sysmem);
++    if (strcmp(vms->gfx_device, "none") != 0) {
++        create_gfx(vms, sysmem);
++    }
+     create_uart(vms, VMAPPLE_UART, sysmem, serial_hd(0));
+     create_rtc(vms);
+     create_pcie(vms);
+@@ -699,10 +701,11 @@ static void vmapple_set_gfx_device(Object *obj, const char *value,
+ {
+     VMAppleMachineState *vms = VMAPPLE_MACHINE(obj);
+ 
+-    if (strcmp(value, "apple-gfx-mmio") != 0 &&
++    if (strcmp(value, "none") != 0 &&
++        strcmp(value, "apple-gfx-mmio") != 0 &&
+         strcmp(value, "reims-vgpu-mmio") != 0) {
+         error_setg(errp,
+-                   "invalid gfx-device '%s' (valid: apple-gfx-mmio, reims-vgpu-mmio)",
++                   "invalid gfx-device '%s' (valid: none, apple-gfx-mmio, reims-vgpu-mmio)",
+                    value);
+         return;
+     }
+@@ -725,7 +728,7 @@ static void vmapple_instance_init(Object *obj)
+                             vmapple_set_gfx_device);
+     object_property_set_description(obj, "gfx-device",
+                                     "Paravirt GPU device backing the Reims VGPU "
+-                                    "slots (apple-gfx-mmio | reims-vgpu-mmio)");
++                                    "slots (none | apple-gfx-mmio | reims-vgpu-mmio)");
+ }
+ 
+ static void vmapple_instance_finalize(Object *obj)

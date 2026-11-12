@@ -1,0 +1,28 @@
+# Third-party sources, derived build and run artifacts, private guest material
+/sources/
+/build/
+/cache/
+/runs/
+/private/
+**/target/
+**/__pycache__/
+*.qcow2
+*.raw
+*.img
+*.dmg
+*.ipsw
+*.fd
+*.log
+*.core
+.env
+
+/tools/vendor/
+
+# Self-authored macOS probe artifacts served from their canonical build output.
+/experiments/E05-installed-boot/guest-diag/audio-query
+/experiments/E05-installed-boot/guest-diag/audio-query.sha256
+/experiments/E05-installed-boot/guest-diag/shared-cache-identity
+/experiments/E05-installed-boot/guest-diag/shared-cache-identity.sha256
+/experiments/E05-installed-boot/guest-diag/audio-test-tone.wav
+/experiments/E05-installed-boot/guest-diag/audio-test-tone.wav.sha256
+/patches/upstream-reference/

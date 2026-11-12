@@ -1,0 +1,415 @@
+{
+  "reported_at": "2026-10-15T02:42:20.164874+00:00",
+  "task": "Two-vCPU EL1 16KiB MMU, ASID separation, broadcast TLBI, permissions and exclusive atomics",
+  "base_project_commit": "90c01b7f43150d2d3075469186c2551bbec7989c",
+  "ibec_attempt": {
+    "status": "blocked by tool safety check",
+    "job_id_returned": false,
+    "requested_log_created": false,
+    "retried_using_alternate_executor": false,
+    "new_apple_firmware_sessions": 0,
+    "new_tss_requests": 0,
+    "ibec_uploaded": false
+  },
+  "new_platform_experiment": true,
+  "qemu_or_reims_sources_changed": false,
+  "host_system_settings_changed": false,
+  "apple_firmware_used_in_new_tests": false,
+  "scope": "14 final self-authored guest scenarios; development exploratory runs not pooled into final count",
+  "final_scenarios": 14,
+  "positive_scenarios": 6,
+  "expected_negative_scenarios": 8,
+  "unexpected_failures": 0,
+  "default_matrix": {
+    "targets": 2,
+    "execution_modes": 2,
+    "test_variants": 3,
+    "cases": 12,
+    "rounds": 32
+  },
+  "extended_matrix": {
+    "targets": 2,
+    "execution_mode": "multi",
+    "cases": 2,
+    "rounds": 256
+  },
+  "totals_over_positive_cases_only": {
+    "cross_cpu_remap_rounds": 640,
+    "asid_isolation_rounds": 640,
+    "remote_write_permission_faults": 48,
+    "verified_atomic_increments": 600000
+  },
+  "thread_topology_verified_by_qmp": true,
+  "concurrent_exclusive_retries_observed": true,
+  "firmware_identical_between_targets_and_modes_per_case": true,
+  "cases": [
+    {
+      "target": "headless",
+      "mode": "multi",
+      "case": "positive",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "b1d41df311e07c855198d99d54165a47e64560b2fe8d1ebd4b742f6410a810d8",
+      "expected_exit": 0,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_PERMISSION_FAULTS": 8,
+        "REMOTE_FAULT_ESR": 2516582479,
+        "REMOTE_FAULT_FAR": 2684354560,
+        "ATOMIC_FINAL_COUNT": 100000,
+        "CPU0_EXCLUSIVE_RETRIES": 32133,
+        "CPU1_EXCLUSIVE_RETRIES": 35327
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/headless-multi-positive.log"
+    },
+    {
+      "target": "headless",
+      "mode": "single",
+      "case": "positive",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "b1d41df311e07c855198d99d54165a47e64560b2fe8d1ebd4b742f6410a810d8",
+      "expected_exit": 0,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 1,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_PERMISSION_FAULTS": 8,
+        "REMOTE_FAULT_ESR": 2516582479,
+        "REMOTE_FAULT_FAR": 2684354560,
+        "ATOMIC_FINAL_COUNT": 100000,
+        "CPU0_EXCLUSIVE_RETRIES": 0,
+        "CPU1_EXCLUSIVE_RETRIES": 0
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/headless-single-positive.log"
+    },
+    {
+      "target": "reims",
+      "mode": "multi",
+      "case": "positive",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "b1d41df311e07c855198d99d54165a47e64560b2fe8d1ebd4b742f6410a810d8",
+      "expected_exit": 0,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_PERMISSION_FAULTS": 8,
+        "REMOTE_FAULT_ESR": 2516582479,
+        "REMOTE_FAULT_FAR": 2684354560,
+        "ATOMIC_FINAL_COUNT": 100000,
+        "CPU0_EXCLUSIVE_RETRIES": 28724,
+        "CPU1_EXCLUSIVE_RETRIES": 45256
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/reims-multi-positive.log"
+    },
+    {
+      "target": "reims",
+      "mode": "single",
+      "case": "positive",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "b1d41df311e07c855198d99d54165a47e64560b2fe8d1ebd4b742f6410a810d8",
+      "expected_exit": 0,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 1,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_PERMISSION_FAULTS": 8,
+        "REMOTE_FAULT_ESR": 2516582479,
+        "REMOTE_FAULT_FAR": 2684354560,
+        "ATOMIC_FINAL_COUNT": 100000,
+        "CPU0_EXCLUSIVE_RETRIES": 0,
+        "CPU1_EXCLUSIVE_RETRIES": 0
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/reims-single-positive.log"
+    },
+    {
+      "target": "headless",
+      "mode": "multi",
+      "case": "wrong-map",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "031791dafb548884e1ffcadf6804c6707cec6d0e4a7bc6dd7bce00b4dedcc155",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "REMOTE_ERROR": 1,
+        "REMOTE_VALUE": 1234605616436477952,
+        "EXPECTED_VALUE": 11063223766036512768
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/headless-multi-wrong-map.log"
+    },
+    {
+      "target": "headless",
+      "mode": "single",
+      "case": "wrong-map",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "031791dafb548884e1ffcadf6804c6707cec6d0e4a7bc6dd7bce00b4dedcc155",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 1,
+      "observed_counters": {
+        "REMOTE_ERROR": 1,
+        "REMOTE_VALUE": 1234605616436477952,
+        "EXPECTED_VALUE": 11063223766036512768
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/headless-single-wrong-map.log"
+    },
+    {
+      "target": "reims",
+      "mode": "multi",
+      "case": "wrong-map",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "031791dafb548884e1ffcadf6804c6707cec6d0e4a7bc6dd7bce00b4dedcc155",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "REMOTE_ERROR": 1,
+        "REMOTE_VALUE": 1234605616436477952,
+        "EXPECTED_VALUE": 11063223766036512768
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/reims-multi-wrong-map.log"
+    },
+    {
+      "target": "reims",
+      "mode": "single",
+      "case": "wrong-map",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "031791dafb548884e1ffcadf6804c6707cec6d0e4a7bc6dd7bce00b4dedcc155",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 1,
+      "observed_counters": {
+        "REMOTE_ERROR": 1,
+        "REMOTE_VALUE": 1234605616436477952,
+        "EXPECTED_VALUE": 11063223766036512768
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/reims-single-wrong-map.log"
+    },
+    {
+      "target": "headless",
+      "mode": "multi",
+      "case": "missing-ro",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "28ab90a3f225c37c520758f1a499fb4151d140a715a381e5d4473573f49e597f",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_ERROR": 2,
+        "REMOTE_VALUE": 0,
+        "EXPECTED_VALUE": 0
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/headless-multi-missing-ro.log"
+    },
+    {
+      "target": "headless",
+      "mode": "single",
+      "case": "missing-ro",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "28ab90a3f225c37c520758f1a499fb4151d140a715a381e5d4473573f49e597f",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 1,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_ERROR": 2,
+        "REMOTE_VALUE": 0,
+        "EXPECTED_VALUE": 0
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/headless-single-missing-ro.log"
+    },
+    {
+      "target": "reims",
+      "mode": "multi",
+      "case": "missing-ro",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "28ab90a3f225c37c520758f1a499fb4151d140a715a381e5d4473573f49e597f",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_ERROR": 2,
+        "REMOTE_VALUE": 0,
+        "EXPECTED_VALUE": 0
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/reims-multi-missing-ro.log"
+    },
+    {
+      "target": "reims",
+      "mode": "single",
+      "case": "missing-ro",
+      "rounds": 32,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "28ab90a3f225c37c520758f1a499fb4151d140a715a381e5d4473573f49e597f",
+      "expected_exit": 1,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 1,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 32,
+        "ASID_SWITCH_ROUNDS": 32,
+        "REMOTE_ERROR": 2,
+        "REMOTE_VALUE": 0,
+        "EXPECTED_VALUE": 0
+      },
+      "log": "runs/e06-smp-mmu/20261015T023918.338432Z/reims-single-missing-ro.log"
+    },
+    {
+      "target": "headless",
+      "mode": "multi",
+      "case": "positive",
+      "rounds": 256,
+      "vcpus": 2,
+      "binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "firmware_sha256": "224b8dbc5176ae6c7e02d3c12209259d7d43015ee83b0666ca335ceac46742e3",
+      "expected_exit": 0,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 256,
+        "ASID_SWITCH_ROUNDS": 256,
+        "REMOTE_PERMISSION_FAULTS": 8,
+        "REMOTE_FAULT_ESR": 2516582479,
+        "REMOTE_FAULT_FAR": 2684354560,
+        "ATOMIC_FINAL_COUNT": 100000,
+        "CPU0_EXCLUSIVE_RETRIES": 24428,
+        "CPU1_EXCLUSIVE_RETRIES": 37060
+      },
+      "log": "runs/e06-smp-mmu/20261015T023925.524271Z/headless-multi-positive.log"
+    },
+    {
+      "target": "reims",
+      "mode": "multi",
+      "case": "positive",
+      "rounds": 256,
+      "vcpus": 2,
+      "binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "firmware_sha256": "224b8dbc5176ae6c7e02d3c12209259d7d43015ee83b0666ca335ceac46742e3",
+      "expected_exit": 0,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "passed": true,
+      "distinct_host_vcpu_threads": 2,
+      "observed_counters": {
+        "CROSS_CPU_VAE1IS_ROUNDS": 256,
+        "ASID_SWITCH_ROUNDS": 256,
+        "REMOTE_PERMISSION_FAULTS": 8,
+        "REMOTE_FAULT_ESR": 2516582479,
+        "REMOTE_FAULT_FAR": 2684354560,
+        "ATOMIC_FINAL_COUNT": 100000,
+        "CPU0_EXCLUSIVE_RETRIES": 32622,
+        "CPU1_EXCLUSIVE_RETRIES": 25701
+      },
+      "log": "runs/e06-smp-mmu/20261015T023925.524271Z/reims-multi-positive.log"
+    }
+  ],
+  "full_reports": [
+    "runs/e06-smp-mmu/20261015T023918.338432Z/results.json",
+    "runs/e06-smp-mmu/20261015T023925.524271Z/results.json"
+  ],
+  "source_sha256": {
+    "experiments/E06-smp-mmu/start.S": "adfd9a171edf0cf14259f5ffb10bab08695e9704629e5c705645c4747cd9d6e9",
+    "experiments/E06-smp-mmu/smp_mmu.c": "9502c6c565c8c6d9cef496f6c0ea9208262dfda0b24e2273e68d68da7205488d",
+    "experiments/E06-smp-mmu/run.py": "32d0a94d60fb593294a6072aa0bb9e555c34a2569f20958ba35f9d647caedede",
+    "experiments/E06-platform-contracts/runtime.c": "7c608d258761c2fb58ef06f045edce4e17dd02f1eab1e6962da9ea41b292cedb",
+    "experiments/E06-platform-contracts/runtime.h": "ab6b645db04308857f4511b07a01790b700dc63650ea7722523c1a537ee3d234",
+    "experiments/E06-platform-contracts/link.ld": "9fed4a46b2ecae0571183de5491dbd118093e2b811694340696b99816a2730a7"
+  },
+  "qemu_builds": {
+    "headless": {
+      "source_commit": "e1aa708569a0de3fbc95fa1ac1836b0ae0a9e96e",
+      "version": "QEMU emulator version 11.0.50",
+      "note": "Existing locally patched build; no emulator code change this turn."
+    },
+    "reims": {
+      "source_commit": "1a72df984914fb9929d35b1217619178133d65a4",
+      "version": "QEMU emulator version 11.1.50",
+      "note": "Existing locally patched build; no emulator code change this turn."
+    }
+  },
+  "limits": [
+    "QEMU may invalidate more TLB entries than architecturally required.",
+    "No assumption that omitted TLBI necessarily preserves a stale entry.",
+    "Single/multithread execution modes share the same emulator code, not independent hardware validation.",
+    "No EL0/Apple PAC, device DMA/IOMMU or OS workload.",
+    "Tests use only EL1 and two vCPUs; no Apple PAC/EL0/IRQ combined workload.",
+    "Counter retries establish observed contention but are not a throughput metric.",
+    "Guest PA A/B non-target checks do not validate real device DMA/IOMMU.",
+    "No modern macOS/iBEC/XNU execution progress from these independent tests."
+  ],
+  "sources": [
+    "https://support.arm.com/documentation/ddi0601/2023-09/AArch64-Instructions/TLBI-VAE1IS--TLBI-VAE1ISNXS--TLB-Invalidate-by-VA--EL1--Inner-Shareable",
+    "https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/aaed66fadba2d2de8fe0daa0aa3eac827d2076b9/arch/arm64/include/asm/tlbflush.h",
+    "https://www.qemu.org/docs/master/devel/multi-thread-tcg.html"
+  ],
+  "reproduce": [
+    "make smp-mmu-tests",
+    "make smp-mmu-extended"
+  ],
+  "passed_declared_scope": true,
+  "cleanup": {
+    "observed_project_qemu_processes": 0,
+    "temporary_per_run_directories": 0,
+    "host_settings_changed": false,
+    "scope": "final explicit /proc argv0 check; unrelated processes left untouched"
+  }
+}

@@ -1,0 +1,59 @@
+diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
+--- a/hw/net/virtio-net.c
++++ b/hw/net/virtio-net.c
+@@ -3100,7 +3100,8 @@
+     }
+ 
+     /* add ctrl_vq last */
+-    n->ctrl_vq = virtio_add_queue(vdev, 64, virtio_net_handle_ctrl);
++    n->ctrl_vq = virtio_add_queue(vdev, n->net_conf.ctrl_queue_size,
++                                   virtio_net_handle_ctrl);
+ }
+ 
+ static void virtio_net_set_multiqueue(VirtIONet *n, int multiqueue)
+@@ -4073,6 +4074,16 @@
+         return;
+     }
+ 
++    if (!n->net_conf.ctrl_queue_size ||
++        n->net_conf.ctrl_queue_size > VIRTQUEUE_MAX_SIZE ||
++        !is_power_of_2(n->net_conf.ctrl_queue_size)) {
++        error_setg(errp, "Invalid ctrl_queue_size (= %" PRIu16 "), "
++                   "must be a power of 2 between 1 and %d",
++                   n->net_conf.ctrl_queue_size, VIRTQUEUE_MAX_SIZE);
++        virtio_cleanup(vdev);
++        return;
++    }
++
+     n->max_ncs = MAX(n->nic_conf.peers.queues, 1);
+ 
+     /*
+@@ -4112,7 +4123,8 @@
+ 
+     virtio_net_add_queue(n, 0);
+ 
+-    n->ctrl_vq = virtio_add_queue(vdev, 64, virtio_net_handle_ctrl);
++    n->ctrl_vq = virtio_add_queue(vdev, n->net_conf.ctrl_queue_size,
++                                   virtio_net_handle_ctrl);
+     qemu_macaddr_default_if_unset(&n->nic_conf.macaddr);
+     memcpy(&n->mac[0], &n->nic_conf.macaddr, sizeof(n->mac));
+     n->status = VIRTIO_NET_S_LINK_UP;
+@@ -4391,6 +4403,7 @@
+                        VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE),
+     DEFINE_PROP_UINT16("tx_queue_size", VirtIONet, net_conf.tx_queue_size,
+                        VIRTIO_NET_TX_QUEUE_DEFAULT_SIZE),
++    DEFINE_PROP_UINT16("ctrl_queue_size", VirtIONet, net_conf.ctrl_queue_size, 64),
+     DEFINE_PROP_UINT16("host_mtu", VirtIONet, net_conf.mtu, 0),
+     DEFINE_PROP_INT32("speed", VirtIONet, net_conf.speed, SPEED_UNKNOWN),
+     DEFINE_PROP_STRING("duplex", VirtIONet, net_conf.duplex_str),
+diff --git a/include/hw/virtio/virtio-net.h b/include/hw/virtio/virtio-net.h
+--- a/include/hw/virtio/virtio-net.h
++++ b/include/hw/virtio/virtio-net.h
+@@ -51,6 +51,7 @@
+     char *tx;
+     uint16_t rx_queue_size;
+     uint16_t tx_queue_size;
++    uint16_t ctrl_queue_size;
+     uint16_t mtu;
+     int32_t speed;
+     char *duplex_str;

@@ -1,0 +1,58 @@
+From: macos-local PAuth cost research
+Subject: [PATCH] Compute the PAuth mixing matrix with packed nibble rotations
+Base-After: 0017-bdif-backend-capacity.patch
+
+Rotate all sixteen cells independently, then mix adjacent and opposite
+16-bit rows. This is the same GF(2) linear matrix as the scalar column
+loop. Keep QARMA3/5 rounds, substitutions, keys and algorithm selection
+unchanged; remove the now-unused scalar cell-rotation helper.
+
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+index 3d83ca4c3c..b5453fadca 100644
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -127,37 +127,16 @@ static uint64_t pac_inv_sub(uint64_t i)
+     return o;
+ }
+ 
+-static int rot_cell(int cell, int n)
+-{
+-    /* 4-bit rotate left by n.  */
+-    cell |= cell << 4;
+-    return extract32(cell, 4 - n, 4);
+-}
+-
+ static uint64_t pac_mult(uint64_t i)
+ {
+-    uint64_t o = 0;
+-    int b;
++    /* Rotate every 4-bit cell left by 1 and 2, without crossing cells. */
++    uint64_t r1 = ((i & UINT64_C(0x7777777777777777)) << 1) |
++                  ((i & UINT64_C(0x8888888888888888)) >> 3);
++    uint64_t r2 = ((i & UINT64_C(0x3333333333333333)) << 2) |
++                  ((i & UINT64_C(0xcccccccccccccccc)) >> 2);
+ 
+-    for (b = 0; b < 4 * 4; b += 4) {
+-        int i0, i4, i8, ic, t0, t1, t2, t3;
+-
+-        i0 = extract64(i, b, 4);
+-        i4 = extract64(i, b + 4 * 4, 4);
+-        i8 = extract64(i, b + 8 * 4, 4);
+-        ic = extract64(i, b + 12 * 4, 4);
+-
+-        t0 = rot_cell(i8, 1) ^ rot_cell(i4, 2) ^ rot_cell(i0, 1);
+-        t1 = rot_cell(ic, 1) ^ rot_cell(i4, 1) ^ rot_cell(i0, 2);
+-        t2 = rot_cell(ic, 2) ^ rot_cell(i8, 1) ^ rot_cell(i0, 1);
+-        t3 = rot_cell(ic, 1) ^ rot_cell(i8, 2) ^ rot_cell(i4, 1);
+-
+-        o |= (uint64_t)t3 << b;
+-        o |= (uint64_t)t2 << (b + 4 * 4);
+-        o |= (uint64_t)t1 << (b + 8 * 4);
+-        o |= (uint64_t)t0 << (b + 12 * 4);
+-    }
+-    return o;
++    /* Each 16-bit row mixes its two neighbors and the opposite row. */
++    return rol64(r1, 16) ^ ror64(r1, 16) ^ rol64(r2, 32);
+ }
+ 
+ static uint64_t tweak_cell_rot(uint64_t cell)

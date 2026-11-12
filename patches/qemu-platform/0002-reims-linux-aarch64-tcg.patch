@@ -1,0 +1,92 @@
+diff --git a/hw/vmapple/Kconfig b/hw/vmapple/Kconfig
+index 37c27473e2..bfd6478b45 100644
+--- a/hw/vmapple/Kconfig
++++ b/hw/vmapple/Kconfig
+@@ -14,10 +14,10 @@ config VMAPPLE_VIRTIO_BLK
+ 
+ config VMAPPLE
+     bool
+-    depends on ARM
+-    depends on HVF
++    depends on AARCH64
++    depends on HVF || TCG || KVM
+     depends on MAC_PVG
+-    default y if ARM
++    default y if AARCH64
+     imply PCI_DEVICES
+     select ARM_GICV3
+     select PLATFORM_BUS
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+index da11b91132..b5cefc30e7 100644
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -49,13 +49,15 @@
+ #include "qobject/qlist.h"
+ #include "standard-headers/linux/input.h"
+ #include "system/hvf.h"
++#ifdef CONFIG_HVF
+ #include "system/hvf_int.h"
++#include "target/arm/hvf_arm.h"
++#endif
+ #include "system/reset.h"
+ #include "system/runstate.h"
+ #include "system/system.h"
+ #include "target/arm/gtimer.h"
+ #include "target/arm/cpu.h"
+-#include "target/arm/hvf_arm.h"
+ 
+ struct VMAppleMachineState {
+     MachineState parent;
+@@ -461,6 +463,7 @@ static void create_pcie(VMAppleMachineState *vms)
+     }
+ }
+ 
++#ifdef CONFIG_HVF
+ /*
+  * macOS 14 and later need two changes to the kernel's memory to boot here,
+  * made when iBoot enters the kernel. From reset, RAM is not executable: each
+@@ -602,16 +605,22 @@ static bool vmapple_exec_fault(CPUState *cpu, hwaddr ipa)
+     return true;
+ }
+ 
++#endif /* CONFIG_HVF */
++
+ static void vmapple_reset(void *opaque)
+ {
+     VMAppleMachineState *vms = opaque;
+     hwaddr base = vms->memmap[VMAPPLE_FIRMWARE].base;
+ 
+     cpu_set_pc(first_cpu, base);
+-    hvf_arm_exec_fault = vmapple_exec_fault;
+-    assert_hvf_ok(hv_vm_protect(vms->memmap[VMAPPLE_MEM].base,
+-                                MACHINE(vms)->ram_size,
+-                                HV_MEMORY_READ | HV_MEMORY_WRITE));
++#ifdef CONFIG_HVF
++    if (hvf_enabled()) {
++        hvf_arm_exec_fault = vmapple_exec_fault;
++        assert_hvf_ok(hv_vm_protect(vms->memmap[VMAPPLE_MEM].base,
++                                    MACHINE(vms)->ram_size,
++                                    HV_MEMORY_READ | HV_MEMORY_WRITE));
++    }
++#endif
+ }
+ 
+ static void mach_vmapple_init(MachineState *machine)
+diff --git a/meson.build b/meson.build
+index 4fa0b99332..2ccf4282a2 100644
+--- a/meson.build
++++ b/meson.build
+@@ -3423,8 +3423,12 @@ foreach target : target_dirs
+     # for the host's architecture.  Use accelerator_targets as a proxy to
+     # figure out which target can support PVG on this host: HVF's on macOS,
+     # KVM's on Linux.
++    # macos-local experimental ARM-on-x86 TCG path: do not confuse this
++    # buildability switch with the guest ARM64 graphics protocol being correct.
+     if pvg.found() and (target in accelerator_targets.get('CONFIG_HVF', []) or
+-                        target in accelerator_targets.get('CONFIG_KVM', []))
++                        target in accelerator_targets.get('CONFIG_KVM', []) or
++                        (host_os == 'linux' and target == 'aarch64-softmmu'
++                         and have_tcg))
+       target_kconfig += 'CONFIG_MAC_PVG=y'
+     endif
+ 

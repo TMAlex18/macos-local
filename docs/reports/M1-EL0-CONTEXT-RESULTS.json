@@ -1,0 +1,484 @@
+{
+  "reported_at": "2026-10-15T23:58:30.541127+00:00",
+  "base_commit": "d5f037dab9a959fd89302a5e23c59f738b5276eb",
+  "task": "Sync prior consolidation and continue independent M1 combined EL0 context experiment",
+  "prior_changes_preserved": [
+    "docs/RESULTS.md remains consolidated evidence; individual reports remain under docs/reports",
+    "restore_identity.erase_identity selects DeviceClass/Variant instead of array index",
+    "live-sign uses explicit errors and iBEC reference cache is reused"
+  ],
+  "preflight": {
+    "ibec_offline_passed": 33,
+    "signing_passed": 7,
+    "ep0_adapter_passed": 15,
+    "failures": 0,
+    "logs": [
+      "runs/stage1-sync-ibec-preflight.log",
+      "runs/stage1-sync-signing-preflight.log"
+    ]
+  },
+  "live_ibec_attempt": {
+    "requested": true,
+    "blocked_by_tool_safety_check": true,
+    "returned_process_or_job": false,
+    "new_session_log_observed": false,
+    "new_qemu_or_tss_session_observed": false,
+    "alternate_execution_used": false,
+    "ibec_executed": false
+  },
+  "experiment": {
+    "virtual_cpus": 1,
+    "el0_contexts": 2,
+    "guest_page_bytes": 16384,
+    "asids": [
+      49,
+      50
+    ],
+    "user_virtual_addresses": {
+      "code": "0xa0000000",
+      "data": "0xa0004000",
+      "stack": "0xa0008000"
+    },
+    "profiles": [
+      "headless/architected keys",
+      "reims/architected keys",
+      "reims/opt-in local HVC model"
+    ],
+    "pac_algorithm": "QARMA5",
+    "apple_crypto_equivalence": false,
+    "cpu_frequency_configuration": "existing default, not combined exact-24MHz test",
+    "emulator_sources_modified": false,
+    "shared_runtime_sources_modified": false,
+    "apple_firmware_used": false,
+    "host_system_changes": false
+  },
+  "final_test_summary": {
+    "cases": 15,
+    "positive": 6,
+    "expected_negative": 9,
+    "unexpected_failures": 0,
+    "positive_totals": {
+      "EL0_TIMER_IRQS": 456,
+      "USER_CONTEXT_SWITCHES": 462,
+      "EL0_PERMISSION_FAULTS": 36,
+      "EL0_SVCS": 24,
+      "TASK0_SIGNED_FRAME_IRQS": 224,
+      "TASK1_SIGNED_FRAME_IRQS": 225
+    },
+    "interrupts_in_signed_frames": 449,
+    "rounds_per_task": [
+      12,
+      64
+    ]
+  },
+  "runs": [
+    "runs/e06-el0-context/20261015T235542.240822Z/results.json",
+    "runs/e06-el0-context/20261015T235557.854358Z/results.json"
+  ],
+  "cases": [
+    {
+      "profile": "headless",
+      "case": "positive",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "expected_exit": 0,
+      "guest_firmware_sha256": "b699cb6f49c67bb27cd1dbdcad8263fdf3337dcfeac6e20471c9f7ad4e71e8d4",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "TASK0_IRQS": 12,
+        "TASK0_WORK": 38,
+        "TASK0_SIGNED_FRAME_IRQS": 12,
+        "TASK1_IRQS": 12,
+        "TASK1_WORK": 27,
+        "TASK1_SIGNED_FRAME_IRQS": 12,
+        "USER_CONTEXT_SWITCHES": 25,
+        "EL0_PERMISSION_FAULTS": 6,
+        "EL0_SVCS": 4,
+        "EL0_TIMER_IRQS": 24
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/headless-positive.log"
+    },
+    {
+      "profile": "headless",
+      "case": "wrong-key",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "fc1eaf6bcf8ab331caf860ea623827af510c644c5edcb8e2f7ad43c6154d3bfb",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "AUTH_FAILURE_ESR": 1912602624,
+        "AUTH_FAILURE_ELR": 2684354744
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/headless-wrong-key.log"
+    },
+    {
+      "profile": "headless",
+      "case": "data-executable",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "5c91bed26d89583f40c9be748bc5ac08079e5b0cd1ca657f8595dcbe6237d1bf",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/headless-data-executable.log"
+    },
+    {
+      "profile": "headless",
+      "case": "ppi-disabled",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "81700250361627b9211f9225fc533ad2f51ca9744a831829732f8dba1f138e83",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "USER_ERROR": 3
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/headless-ppi-disabled.log"
+    },
+    {
+      "profile": "reims",
+      "case": "positive",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 0,
+      "guest_firmware_sha256": "b699cb6f49c67bb27cd1dbdcad8263fdf3337dcfeac6e20471c9f7ad4e71e8d4",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "TASK0_IRQS": 12,
+        "TASK0_WORK": 52,
+        "TASK0_SIGNED_FRAME_IRQS": 11,
+        "TASK1_IRQS": 12,
+        "TASK1_WORK": 37,
+        "TASK1_SIGNED_FRAME_IRQS": 11,
+        "USER_CONTEXT_SWITCHES": 25,
+        "EL0_PERMISSION_FAULTS": 6,
+        "EL0_SVCS": 4,
+        "EL0_TIMER_IRQS": 24
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-positive.log"
+    },
+    {
+      "profile": "reims",
+      "case": "wrong-key",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "fc1eaf6bcf8ab331caf860ea623827af510c644c5edcb8e2f7ad43c6154d3bfb",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "AUTH_FAILURE_ESR": 1912602624,
+        "AUTH_FAILURE_ELR": 2684354744
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-wrong-key.log"
+    },
+    {
+      "profile": "reims",
+      "case": "data-executable",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "5c91bed26d89583f40c9be748bc5ac08079e5b0cd1ca657f8595dcbe6237d1bf",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-data-executable.log"
+    },
+    {
+      "profile": "reims",
+      "case": "ppi-disabled",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "81700250361627b9211f9225fc533ad2f51ca9744a831829732f8dba1f138e83",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "USER_ERROR": 3
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-ppi-disabled.log"
+    },
+    {
+      "profile": "reims-model",
+      "case": "positive",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 0,
+      "guest_firmware_sha256": "445b9fbb9b3a42aa4470ec46d70a1fd75cd60c3b69040b4c919764081dd98b5a",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "TASK0_IRQS": 12,
+        "TASK0_WORK": 38,
+        "TASK0_SIGNED_FRAME_IRQS": 12,
+        "TASK1_IRQS": 12,
+        "TASK1_WORK": 27,
+        "TASK1_SIGNED_FRAME_IRQS": 12,
+        "USER_CONTEXT_SWITCHES": 25,
+        "EL0_PERMISSION_FAULTS": 6,
+        "EL0_SVCS": 4,
+        "EL0_TIMER_IRQS": 24
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-model-positive.log"
+    },
+    {
+      "profile": "reims-model",
+      "case": "wrong-key",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "c82fcbda1066ae28c90d811e55cd11d777118853766a8269f9a1b5d2229fb2c3",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "AUTH_FAILURE_ESR": 1912602624,
+        "AUTH_FAILURE_ELR": 2684354744
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-model-wrong-key.log"
+    },
+    {
+      "profile": "reims-model",
+      "case": "data-executable",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "118250c272cfa6822d45345fe434cfb88c5479a68e7f5a124fa27c988a7189a8",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-model-data-executable.log"
+    },
+    {
+      "profile": "reims-model",
+      "case": "ppi-disabled",
+      "rounds": 12,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 1,
+      "guest_firmware_sha256": "742fbb1f450b5d71f6db0723623627f5af80b3a32cbc1f13a5d9a02dee760cda",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 1,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 12,
+        "USER_ERROR": 3
+      },
+      "log": "runs/e06-el0-context/20261015T235542.240822Z/reims-model-ppi-disabled.log"
+    },
+    {
+      "profile": "headless",
+      "case": "positive",
+      "rounds": 64,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-vmapple-headless/qemu-system-aarch64",
+      "expected_exit": 0,
+      "guest_firmware_sha256": "004ff95efec678568214bece8749d89e6b668dcec3ff56e42794ef2082225964",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 64,
+        "TASK0_IRQS": 64,
+        "TASK0_WORK": 153,
+        "TASK0_SIGNED_FRAME_IRQS": 64,
+        "TASK1_IRQS": 64,
+        "TASK1_WORK": 142,
+        "TASK1_SIGNED_FRAME_IRQS": 64,
+        "USER_CONTEXT_SWITCHES": 129,
+        "EL0_PERMISSION_FAULTS": 6,
+        "EL0_SVCS": 4,
+        "EL0_TIMER_IRQS": 128
+      },
+      "log": "runs/e06-el0-context/20261015T235557.854358Z/headless-positive.log"
+    },
+    {
+      "profile": "reims",
+      "case": "positive",
+      "rounds": 64,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 0,
+      "guest_firmware_sha256": "004ff95efec678568214bece8749d89e6b668dcec3ff56e42794ef2082225964",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 64,
+        "TASK0_IRQS": 64,
+        "TASK0_WORK": 155,
+        "TASK0_SIGNED_FRAME_IRQS": 63,
+        "TASK1_IRQS": 64,
+        "TASK1_WORK": 142,
+        "TASK1_SIGNED_FRAME_IRQS": 63,
+        "USER_CONTEXT_SWITCHES": 129,
+        "EL0_PERMISSION_FAULTS": 6,
+        "EL0_SVCS": 4,
+        "EL0_TIMER_IRQS": 128
+      },
+      "log": "runs/e06-el0-context/20261015T235557.854358Z/reims-positive.log"
+    },
+    {
+      "profile": "reims-model",
+      "case": "positive",
+      "rounds": 64,
+      "virtual_cpus": 1,
+      "user_tasks": 2,
+      "qemu_binary": "build/qemu-reims-arm16k/qemu-system-aarch64",
+      "expected_exit": 0,
+      "guest_firmware_sha256": "69d6e35d5821a8029d2bdfac73bd897aae18c790deb29fe4ab50d76d93d0a768",
+      "qemu_source_modified": false,
+      "apple_code_used": false,
+      "passed": true,
+      "guest_exit": 0,
+      "host_timeout": false,
+      "counters": {
+        "EL0_ROUNDS_PER_TASK": 64,
+        "TASK0_IRQS": 64,
+        "TASK0_WORK": 225,
+        "TASK0_SIGNED_FRAME_IRQS": 62,
+        "TASK1_IRQS": 64,
+        "TASK1_WORK": 199,
+        "TASK1_SIGNED_FRAME_IRQS": 63,
+        "USER_CONTEXT_SWITCHES": 129,
+        "EL0_PERMISSION_FAULTS": 6,
+        "EL0_SVCS": 4,
+        "EL0_TIMER_IRQS": 128
+      },
+      "log": "runs/e06-el0-context/20261015T235557.854358Z/reims-model-positive.log"
+    }
+  ],
+  "source_hashes": {
+    "experiments/E06-el0-context/README.md": "96c37c18bd4b98f08f54d0fdf021788da3ea14ebf9f3adc79a2c818ea1aefeba",
+    "experiments/E06-el0-context/context.c": "b00c397839110fd5e5602bb93ec393962ef657a93b8de87d4648a103dcaaeab8",
+    "experiments/E06-el0-context/link.ld": "e2d17bf91e709953b955bbf138840ac03f476b7a82d6821cbc22d84509bccae3",
+    "experiments/E06-el0-context/run.py": "806e0921ee548417b98ca45b1cdb1b495805813685239f6f684e064ba826ce5e",
+    "experiments/E06-el0-context/user.S": "370f5a6f804fe950b109f9e57ef146130f8e9222e01908a0e37c10c5267ee84c"
+  },
+  "initial_harness_issues": [
+    "First link attempted implicit libc memcpy for exception-frame assignment; fixed with explicit volatile field copy.",
+    "Model-only build found unused direct-key helper under -Werror; helper now compiled only for the architecture profile."
+  ],
+  "observations": [
+    "All expected negative runs exited1 with their specific marker, never with host timeout.",
+    "Wrong-key runs observed ESR_EL1=0x72000000 in actual EL0 authentication failure.",
+    "EL0-only page access, read-only code and UXN each generated specifically checked lower-EL permission faults.",
+    "Opt-in HVC model restored expected privileged key bank on IRQ/SVC while preserving user signatures across resumption."
+  ],
+  "limitations": [
+    "One vCPU scheduling two synthetic tasks, not multicore EL0 or a real OS.",
+    "Integer register/frame state only; no FP/SIMD/SVE/TLS or nested interrupts.",
+    "QEMU variants share implementation, not independent physical hardware tests.",
+    "No new Apple firmware execution, TSS call, iBEC, XNU, guest GPU rendering, or performance result."
+  ],
+  "references": [
+    {
+      "url": "https://www.qemu.org/docs/master/system/arm/cpu-features.html",
+      "local_pinned_reference": "sources/reims/vendor/qemu/docs/system/arm/cpu-features.rst",
+      "claim": "QARMA5 explicitly selected; default implementation-defined algorithm is non-cryptographic"
+    },
+    {
+      "url": "https://docs.kernel.org/arch/arm64/pointer-authentication.html",
+      "claim": "architectural PAuth context background only; experiment does not run Linux guest"
+    },
+    {
+      "local_pinned_reference": "experiments/E06-platform-contracts/runtime.h",
+      "claim": "unchanged saved exception-frame layout"
+    },
+    {
+      "local_pinned_reference": "experiments/E06-pauth-hvc/README.md",
+      "claim": "limitations of the local model, not Apple KDF equivalence"
+    }
+  ],
+  "working_tree": {
+    "automatic_commit_created": false,
+    "new_source_dir": "experiments/E06-el0-context"
+  },
+  "reproduce": [
+    "make el0-context-tests",
+    "make el0-context-extended"
+  ]
+}

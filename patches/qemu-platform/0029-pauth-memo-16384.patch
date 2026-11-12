@@ -1,0 +1,39 @@
+From: macos-local research
+Subject: [PATCH] Add optional 16384-entry exact PAuth memo capacity
+
+Keep the default 64 and existing 1024 active capacities. Extend the fixed
+per-vCPU array and property validation to 16384; full tag checks, index hash,
+QARMA computation, counters and clocks are unchanged. Existing sizeof-based
+CPU reset and post-load clearing cover the entire enlarged array.
+
+The array costs 768 KiB per vCPU (48-byte entries), including memo-off and
+smaller-capacity modes. Reset/post-load clear that cache-sized region too.
+This is an optional capacity experiment, not a measured guest speedup.
+Local experiment, not intended for upstream submission.
+
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -147,7 +147,7 @@
+ } ARMPACKey;
+ 
+ #define ARM_PAUTH_MEMO_DEFAULT_ENTRIES 64
+-#define ARM_PAUTH_MEMO_MAX_ENTRIES 1024
++#define ARM_PAUTH_MEMO_MAX_ENTRIES 16384
+ 
+ /* Derived TCG QARMA results only; never part of architectural/migrated state. */
+ typedef struct ARMPAuthMemoEntry {
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -1884,8 +1884,9 @@
+     Error *local_err = NULL;
+ 
+     if (cpu->prop_pauth_memo_entries != ARM_PAUTH_MEMO_DEFAULT_ENTRIES &&
++        cpu->prop_pauth_memo_entries != 1024 &&
+         cpu->prop_pauth_memo_entries != ARM_PAUTH_MEMO_MAX_ENTRIES) {
+-        error_setg(errp, "x-pauth-memo-entries must be 64 or 1024");
++        error_setg(errp, "x-pauth-memo-entries must be 64, 1024 or 16384");
+         return;
+     }
+     if (!cpu->prop_pauth_memo &&

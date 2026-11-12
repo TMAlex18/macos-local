@@ -1,0 +1,174 @@
+{
+  "reported_at": "2026-10-23",
+  "baseline_commit": "bd06949",
+  "scope": "Self-authored EL0 Q0..Q31, FPCR/FPSR, TLS, MMU/ASID, QARMA5 and real timer preemption; historical single-vCPU samples and new two-vCPU migration samples are separately scoped.",
+  "new_experiment": "experiments/E06-el0-simd32",
+  "baseline_E06_el0_fp_tls_unmodified": true,
+  "normal_matrix": {
+    "result": "runs/e06-el0-simd32/20261016T130226.956444Z/results.json",
+    "passed": true,
+    "positive": 4,
+    "expected_guest_negative": 40,
+    "total": 44,
+    "profiles": [
+      "headless",
+      "reims",
+      "reims-model",
+      "clock-exact"
+    ],
+    "case_names": [
+      "data-executable",
+      "positive",
+      "ppi-disabled",
+      "skip-fp",
+      "skip-fpcr",
+      "skip-fpsr",
+      "skip-q0",
+      "skip-q16",
+      "skip-q31",
+      "skip-tls",
+      "wrong-key"
+    ],
+    "exact_24mhz_guest_readback": true,
+    "simd_qregs_count": 32,
+    "simd_words_checked_per_iteration": 64,
+    "actual_asm_save_restore": true
+  },
+  "extended_matrix": {
+    "result": "runs/e06-el0-simd32/20261016T130308.005382Z/results.json",
+    "passed": true,
+    "positive": 4,
+    "rounds_per_el0_task": 64,
+    "total_guest_timer_irqs": 512,
+    "total_guest_context_switches": 516,
+    "all_64_Q_words_verified_by_EL0": true
+  },
+  "all_passed": true,
+  "limitations": [
+    "The historical 2026-10-16 samples use one vCPU; newer two-vCPU scope is separate below.",
+    "Selected FPCR and FPSR values, no broad FP arithmetic exception test",
+    "No SVE, SME, FPMR, asynchronous nested IRQ or OS scheduler",
+    "Three VMApple profiles share QEMU code and are not separate hardware implementations",
+    "No Apple PAC cryptography equivalent, Apple firmware, TSS, iBEC, Stage2 or macOS",
+    "Counts are functional events, not native-performance or sustained reliability measurements"
+  ],
+  "guest_code_sha256": {
+    "experiments/E06-el0-simd32/README.md": "82ae43f245190af2f033beacd382ee96e8c19db0c4163670323b39f9b6edacaa",
+    "experiments/E06-el0-simd32/context.c": "97eb2d75d10b8de906c2f7f2af62e4107f94c9fb6dd4ce3379a2f5eabb3b84ee",
+    "experiments/E06-el0-simd32/link.ld": "e2d17bf91e709953b955bbf138840ac03f476b7a82d6821cbc22d84509bccae3",
+    "experiments/E06-el0-simd32/run.py": "0330a09a8b38107512cbef565fbbd5cc38a68fb2cd3e2bcd374d7627e20cb9e6",
+    "experiments/E06-el0-simd32/simd_regs.S": "539fc77cb3f10246d369e2ac0c242213cf203ee473e1e0a321ecc18ed5a31505",
+    "experiments/E06-el0-simd32/user.S": "96fa0eab8210e130e61b3fd9707ea2cbe0ffa8407fb695cf0ae3c75f9535da4f"
+  },
+  "commands": [
+    "make el0-simd32-tests",
+    "make el0-simd32-extended"
+  ],
+  "private_or_system_files_edited": false,
+  "guest_code_sha256_scope": "Historical 2026-10-16 single-vCPU sources; current per-run firmware hashes are in the referenced runtime reports.",
+  "cross_vcpu_migration": {
+    "reported_at": "2026-10-23",
+    "reports": {
+      "positive_multi": "runs/e06-el0-simd32/migration-20261023T151646.925550Z/results.json",
+      "positive_single": "runs/e06-el0-simd32/migration-20261023T151800.983405Z/results.json",
+      "negative_controls": "runs/e06-el0-simd32/migration-20261023T151849.109204Z/results.json",
+      "ttbr_negative_final": "runs/e06-el0-simd32/migration-20261023T152014.274526Z/results.json",
+      "extended": "runs/e06-el0-simd32/migration-20261023T152014.272028Z/results.json",
+      "single_vcpu_regression": "runs/e06-el0-simd32/20261023T152014.269682Z/results.json",
+      "single_vcpu_model_regression": "runs/e06-el0-simd32/20261023T153029.984338Z/results.json"
+    },
+    "binary": "build/qemu-bdif-usb/qemu-system-aarch64",
+    "qemu_sha256": "0273d0cccbb82554f6753cf54d70c5703e5627e52cc4fdbac8d64c4f49b08973",
+    "cpu_requested": "max,pauth-qarma5=on,cntfrq=24000000,x-cntfrq-exact=on",
+    "virtual_cpus": 2,
+    "user_tasks": 2,
+    "modes": [
+      "multi",
+      "single"
+    ],
+    "host_thread_layout_verified_by_qmp": true,
+    "basic_positive_rounds_per_task": 16,
+    "positive_windows": 2,
+    "negative_controls": [
+      "skip-tls",
+      "skip-q31",
+      "wrong-asid",
+      "wrong-key"
+    ],
+    "negative_scope": "TLS, Q30/Q31 and key use the six corresponding cases in negative_controls; wrong-asid uses the two final stricter TTBR classifications in ttbr_negative_final. Original reports remain intact; these are separate invocations, not one full run.",
+    "wrong_asid_scope": "Restores the other task TTBR0 including both table base and ASID; not an isolated ASID-tag mutation.",
+    "negative_expected_guest_exit": 1,
+    "host_timeouts": 0,
+    "extended_positive_windows": 2,
+    "extended_rounds_per_task": 64,
+    "extended_total_timer_irqs": 256,
+    "extended_each_task_cpu_mask": 3,
+    "extended_each_task_cpu_irq_count": 32,
+    "extended_each_task_cpu_signed_frame_irq_count_range": [
+      30,
+      32
+    ],
+    "cpu_identity_scope": "TPIDRRO_EL0 is initialized on each CPU and checked against MPIDR_EL1 at exception entry; EL0 records the local CPU after state checks and actual PAC return.",
+    "context_handoff": "Both CPUs save full context, release task ownership and publish an epoch before acquiring the peer epoch and atomically claiming the other task.",
+    "shared_state": "Distinct ASIDs, physical data and stacks; all Q0..Q31, FPCR/FPSR, TLS, integer frame, SP, TTBR0 and architectural PAuth keys migrate.",
+    "single_vcpu_regression_scope": "Two separate positive 12-round samples: clock-exact and reims-model. The latter verifies the model initialization refactor at its original 1GHz setting; historical 44+4 samples were not rerun.",
+    "qemu_sources_modified": false,
+    "apple_code_used": false,
+    "limits": [
+      "Two self-authored tasks and two vCPUs, not an OS scheduler or XNU.",
+      "Both scheduling modes use one QEMU binary, not independent hardware.",
+      "No SVE/SME/FPMR, nested IRQ, DMA/IOMMU, sustained reliability or performance claim.",
+      "Does not resolve the M2 platform callback or prove Apple cryptographic equivalence."
+    ],
+    "software_key_model": {
+      "explicit_opt_in": true,
+      "positive_report": "runs/e06-el0-simd32/migration-model-20261023T152617.444221Z/results.json",
+      "negative_report": "runs/e06-el0-simd32/migration-model-20261023T152635.927454Z/results.json",
+      "positive_cases": 2,
+      "negative_cases": 2,
+      "rounds_per_task": 16,
+      "modes": [
+        "multi",
+        "single"
+      ],
+      "each_cpu_initialized": true,
+      "each_cpu_kernel_bank_checks": 21,
+      "task_el0_cpu_mask": 3,
+      "task_state": "Per-task explicit diversifier; EL1 kernel key values are not stored as user-task state.",
+      "random_keys_output": false,
+      "build_directory_separate": true,
+      "apple_equivalence_proven": false
+    },
+    "lazy_fp": {
+      "explicit_opt_in": true,
+      "separate_from_software_key_model": true,
+      "positive_report": "runs/e06-el0-simd32/migration-lazy-20261023T154034.648219Z/results.json",
+      "negative_report": "runs/e06-el0-simd32/migration-lazy-20261023T154213.574647Z/results.json",
+      "positive_cases": 2,
+      "negative_cases": 2,
+      "rounds_per_task": 16,
+      "modes": [
+        "multi",
+        "single"
+      ],
+      "fpen_traps_el0_allows_el1": 1,
+      "exception_class": 7,
+      "last_esr": "0x1fe00000",
+      "independently_tagged_fp_instructions": 35,
+      "each_cpu_exact_elr_checks": 15,
+      "each_task_cpu_traps_range": [
+        7,
+        8
+      ],
+      "each_cpu_traps_equal_restores": true,
+      "irq_before_first_fp_observed_on_both_cpus": true,
+      "pending_fp_saved_state_preserved": true,
+      "task_el0_cpu_mask": 3,
+      "negative_scope": "Only the injected missing-restore path disables its local timer so the real EL0 data comparison reports before the next EL1 owner check; host timeouts never pass.",
+      "default_eager_and_model_firmware_byte_identical_after_recompile": true,
+      "default_modes_runtime_matrix_repeated": false,
+      "qemu_sources_modified": false,
+      "apple_code_used": false
+    }
+  }
+}

@@ -1,0 +1,72 @@
+From: macos-local research
+Subject: [PATCH] Make the four VirtIO sound queue capacities configurable
+
+Expose a standard queue-size property, keeping the existing default of 64.
+Require a nonzero power of two within QEMU's supported virtqueue limit and
+use the value for control, event, TX and RX queues. This permits a selected
+512-entry diagnostic profile without rewriting guest addresses or code.
+It does not establish any guest allocation or driver-binding outcome.
+Local experiment, not intended for upstream submission.
+
+diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
+--- a/hw/audio/virtio-snd.c
++++ b/hw/audio/virtio-snd.c
+@@ -19,6 +19,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/log.h"
+ #include "qemu/error-report.h"
++#include "qemu/host-utils.h"
+ #include "system/runstate.h"
+ #include "system/system.h"
+ #include "qemu/timer.h"
+@@ -289,6 +290,7 @@
+ 
+ static const Property virtio_snd_properties[] = {
+     DEFINE_AUDIO_PROPERTIES(VirtIOSound, audio_be),
++    DEFINE_PROP_UINT16("queue-size", VirtIOSound, queue_size, 64),
+     DEFINE_PROP_STRING("x-pcm-trace", VirtIOSound, pcm_trace_filename),
+     DEFINE_PROP_UINT32("jacks", VirtIOSound, snd_conf.jacks,
+                        VIRTIO_SOUND_JACK_DEFAULT),
+@@ -1378,6 +1380,13 @@
+ 
+     trace_virtio_snd_realize(vsnd);
+ 
++    if (!is_power_of_2(vsnd->queue_size) ||
++        vsnd->queue_size > VIRTQUEUE_MAX_SIZE) {
++        error_setg(errp, "queue-size must be a power of 2 between 1 and %d",
++                   VIRTQUEUE_MAX_SIZE);
++        return;
++    }
++
+     /* check number of jacks and streams */
+     if (vsnd->snd_conf.jacks > 8) {
+         error_setg(errp,
+@@ -1432,13 +1441,13 @@
+     virtio_add_feature(&vsnd->features, VIRTIO_F_VERSION_1);
+ 
+     vsnd->queues[VIRTIO_SND_VQ_CONTROL] =
+-        virtio_add_queue(vdev, 64, virtio_snd_handle_ctrl);
++        virtio_add_queue(vdev, vsnd->queue_size, virtio_snd_handle_ctrl);
+     vsnd->queues[VIRTIO_SND_VQ_EVENT] =
+-        virtio_add_queue(vdev, 64, virtio_snd_handle_event);
++        virtio_add_queue(vdev, vsnd->queue_size, virtio_snd_handle_event);
+     vsnd->queues[VIRTIO_SND_VQ_TX] =
+-        virtio_add_queue(vdev, 64, virtio_snd_handle_tx_xfer);
++        virtio_add_queue(vdev, vsnd->queue_size, virtio_snd_handle_tx_xfer);
+     vsnd->queues[VIRTIO_SND_VQ_RX] =
+-        virtio_add_queue(vdev, 64, virtio_snd_handle_rx_xfer);
++        virtio_add_queue(vdev, vsnd->queue_size, virtio_snd_handle_rx_xfer);
+     QTAILQ_INIT(&vsnd->cmdq);
+     QSIMPLEQ_INIT(&vsnd->invalid);
+ }
+diff --git a/include/hw/audio/virtio-snd.h b/include/hw/audio/virtio-snd.h
+--- a/include/hw/audio/virtio-snd.h
++++ b/include/hw/audio/virtio-snd.h
+@@ -197,6 +197,7 @@
+     VirtIODevice parent_obj;
+ 
+     VirtQueue *queues[VIRTIO_SND_VQ_MAX];
++    uint16_t queue_size;
+     uint32_t queue_inuse[VIRTIO_SND_VQ_MAX];
+     uint64_t features;
+     VirtIOSoundPCMStream *streams;

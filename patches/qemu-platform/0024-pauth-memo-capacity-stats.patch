@@ -1,0 +1,194 @@
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -146,7 +146,8 @@
+     uint64_t lo, hi;
+ } ARMPACKey;
+ 
+-#define ARM_PAUTH_MEMO_ENTRIES 64
++#define ARM_PAUTH_MEMO_DEFAULT_ENTRIES 64
++#define ARM_PAUTH_MEMO_MAX_ENTRIES 1024
+ 
+ /* Derived TCG QARMA results only; never part of architectural/migrated state. */
+ typedef struct ARMPAuthMemoEntry {
+@@ -781,12 +782,16 @@
+     bool event_register;
+ 
+     /* Per-vCPU pure-function memoization; reset also clears cached key copies. */
+-    ARMPAuthMemoEntry pauth_memo[ARM_PAUTH_MEMO_ENTRIES];
++    ARMPAuthMemoEntry pauth_memo[ARM_PAUTH_MEMO_MAX_ENTRIES];
+ 
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+ 
+-    /* Fields after this point are preserved across CPU reset. */
++    /* Fields after this point are preserved by the bulk CPU reset. */
++
++    /* Non-migrated diagnostics; reset/post-load explicitly use atomic stores. */
++    uint64_t pauth_memo_hits;
++    uint64_t pauth_memo_misses;
+ 
+     /* Internal CPU feature flags.  */
+     uint64_t features;
+@@ -1114,6 +1119,8 @@
+ 
+     /* Default-off local experiment; complete ComputePAC inputs are compared. */
+     bool prop_pauth_memo;
++    uint32_t prop_pauth_memo_entries;
++    bool prop_pauth_memo_stats;
+ 
+     /* Specify the number of cores in this CPU cluster. Used for the L2CTLR
+      * register.
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -28,6 +28,8 @@
+ #include "target/arm/tcg/idau.h"
+ #include "qemu/module.h"
+ #include "qapi/error.h"
++#include "qapi/visitor.h"
++#include "qemu/atomic.h"
+ #include "cpu.h"
+ #ifdef CONFIG_TCG
+ #include "exec/translation-block.h"
+@@ -344,6 +346,8 @@
+     }
+ 
+     memset(env, 0, offsetof(CPUARMState, end_reset_fields));
++    qatomic_set(&env->pauth_memo_hits, 0);
++    qatomic_set(&env->pauth_memo_misses, 0);
+ 
+     g_hash_table_foreach(cpu->cp_regs, cp_reg_reset, cpu);
+     g_hash_table_foreach(cpu->cp_regs, cp_reg_check_reset, cpu);
+@@ -1238,9 +1242,34 @@
+     return cpu->mp_affinity;
+ }
+ 
++/* Each vCPU writes its own counters; QOM reads do not stop guest execution.
++ * CPU reset and migration post-load clear them while that CPU is quiescent.
++ * Separate property reads are not an atomic hit/miss snapshot.
++ */
++static void arm_get_pauth_memo_hits(Object *obj, Visitor *v, const char *name,
++                                   void *opaque, Error **errp)
++{
++    uint64_t value = qatomic_read(&ARM_CPU(obj)->env.pauth_memo_hits);
++
++    visit_type_uint64(v, name, &value, errp);
++}
++
++static void arm_get_pauth_memo_misses(Object *obj, Visitor *v, const char *name,
++                                     void *opaque, Error **errp)
++{
++    uint64_t value = qatomic_read(&ARM_CPU(obj)->env.pauth_memo_misses);
++
++    visit_type_uint64(v, name, &value, errp);
++}
++
+ static void arm_cpu_initfn(Object *obj)
+ {
+     ARMCPU *cpu = ARM_CPU(obj);
++
++    object_property_add(obj, "x-pauth-memo-hits", "uint64",
++                        arm_get_pauth_memo_hits, NULL, NULL, NULL);
++    object_property_add(obj, "x-pauth-memo-misses", "uint64",
++                        arm_get_pauth_memo_misses, NULL, NULL, NULL);
+ 
+     cpu->cp_regs = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+                                          NULL, g_free);
+@@ -1854,6 +1883,18 @@
+     CPUARMState *env = &cpu->env;
+     Error *local_err = NULL;
+ 
++    if (cpu->prop_pauth_memo_entries != ARM_PAUTH_MEMO_DEFAULT_ENTRIES &&
++        cpu->prop_pauth_memo_entries != ARM_PAUTH_MEMO_MAX_ENTRIES) {
++        error_setg(errp, "x-pauth-memo-entries must be 64 or 1024");
++        return;
++    }
++    if (!cpu->prop_pauth_memo &&
++        (cpu->prop_pauth_memo_entries != ARM_PAUTH_MEMO_DEFAULT_ENTRIES ||
++         cpu->prop_pauth_memo_stats)) {
++        error_setg(errp, "Memo capacity/statistics require x-pauth-memo=on");
++        return;
++    }
++
+ #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+     /* Use pc-relative instructions in system-mode */
+     tcg_cflags_set(cs, CF_PCREL);
+@@ -2540,6 +2581,9 @@
+     DEFINE_PROP_BOOL("backcompat-pauth-default-use-qarma5", ARMCPU,
+                       backcompat_pauth_default_use_qarma5, false),
+     DEFINE_PROP_BOOL("x-pauth-memo", ARMCPU, prop_pauth_memo, false),
++    DEFINE_PROP_UINT32("x-pauth-memo-entries", ARMCPU, prop_pauth_memo_entries,
++                       ARM_PAUTH_MEMO_DEFAULT_ENTRIES),
++    DEFINE_PROP_BOOL("x-pauth-memo-stats", ARMCPU, prop_pauth_memo_stats, false),
+     DEFINE_PROP_BOOL("cpu-on-copies-pauth-keys", ARMCPU,
+                      cpu_on_copies_pauth_keys, false),
+ };
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -1,4 +1,5 @@
+ #include "qemu/osdep.h"
++#include "qemu/atomic.h"
+ #include "cpu.h"
+ #include "cpregs.h"
+ #include "trace.h"
+@@ -1164,6 +1165,8 @@
+ 
+     /* Optional derived cache is local to this CPU and is not migrated. */
+     memset(env->pauth_memo, 0, sizeof(env->pauth_memo));
++    qatomic_set(&env->pauth_memo_hits, 0);
++    qatomic_set(&env->pauth_memo_misses, 0);
+ 
+     trace_cpu_post_load(cpu->cpreg_vmstate_array_len,
+                         cpu->cpreg_array_len);
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/atomic.h"
+ #include "cpu.h"
+ #include "helper.h"
+ #include "internals.h"
+@@ -241,13 +242,14 @@
+     return qemu_xxhash64_4(data, modifier, key.lo, key.hi);
+ }
+ 
+-static unsigned pauth_memo_slot(uint64_t data, uint64_t modifier)
++static unsigned pauth_memo_slot(uint64_t data, uint64_t modifier,
++                                unsigned entries)
+ {
+     /* Non-key-derived index; collisions require a complete tag comparison. */
+     uint64_t mixed = (data >> 2) ^ (data >> 32) ^
+                      (modifier >> 4) ^ (modifier >> 36);
+ 
+-    return mixed & (ARM_PAUTH_MEMO_ENTRIES - 1);
++    return mixed & (entries - 1);
+ }
+ 
+ static uint64_t pauth_computepac(CPUARMState *env, uint64_t data,
+@@ -268,11 +270,20 @@
+     }
+ 
+     if (cpu->prop_pauth_memo) {
+-        entry = &env->pauth_memo[pauth_memo_slot(data, modifier)];
++        entry = &env->pauth_memo[pauth_memo_slot(data, modifier,
++                                              cpu->prop_pauth_memo_entries)];
+         if (entry->valid && entry->data == data &&
+             entry->modifier == modifier && entry->key.lo == key.lo &&
+             entry->key.hi == key.hi && entry->algorithm == algorithm) {
++            if (cpu->prop_pauth_memo_stats) {
++                qatomic_set(&env->pauth_memo_hits,
++                            qatomic_read(&env->pauth_memo_hits) + 1);
++            }
+             return entry->result;
++        }
++        if (cpu->prop_pauth_memo_stats) {
++            qatomic_set(&env->pauth_memo_misses,
++                        qatomic_read(&env->pauth_memo_misses) + 1);
+         }
+     }
+ 

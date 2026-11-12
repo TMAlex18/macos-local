@@ -1,0 +1,371 @@
+diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
+index 6df7ea0eb0..ba86efa7f2 100644
+--- a/hw/audio/virtio-snd.c
++++ b/hw/audio/virtio-snd.c
+@@ -20,6 +20,8 @@
+ #include "qemu/log.h"
+ #include "qemu/error-report.h"
+ #include "system/runstate.h"
++#include "system/system.h"
++#include "qemu/timer.h"
+ #include "trace.h"
+ #include "qapi/error.h"
+ #include "hw/audio/virtio-snd.h"
+@@ -50,6 +52,178 @@ static void virtio_snd_pcm_flush(VirtIOSoundPCMStream *stream);
+ static void virtio_snd_pcm_close(VirtIOSoundPCMStream *stream);
+ static void virtio_snd_pcm_in_cb(void *data, int available);
+ 
++/*
++ * Optional host-only PCM boundary evidence. One exclusive file, at most 8 MiB.
++ * The format is documented/decoded by E05-usbip-kernel/pcm_boundary_trace.py.
++ * All integers are little endian. No captured bytes feed the audio path.
++ * Synchronous diagnostic I/O can affect timing; this is not a benchmark mode.
++ */
++#define PCM_TRACE_LIMIT (8 * 1024 * 1024)
++#define PCM_TRACE_WORDS 20
++#define PCM_TRACE_HEADER (PCM_TRACE_WORDS * sizeof(uint64_t))
++enum {
++    PCM_TRACE_POP = 1,
++    PCM_TRACE_POPULATE,
++    PCM_TRACE_WRITE,
++    PCM_TRACE_RETURN,
++    PCM_TRACE_CONTROL,
++    PCM_TRACE_END,
++};
++enum {
++    PCM_TRACE_DRAINED = 1,
++    PCM_TRACE_NOT_STARTED,
++    PCM_TRACE_FLUSH,
++};
++enum {
++    PCM_TRACE_COMPLETE = 1,
++    PCM_TRACE_CAPPED,
++    PCM_TRACE_ERROR,
++};
++
++static void virtio_snd_pcm_trace_end(VirtIOSound *s, uint64_t reason)
++{
++    uint64_t record[PCM_TRACE_WORDS] = { 0 };
++
++    if (!s->pcm_trace_file) {
++        return;
++    }
++    record[0] = cpu_to_le64(PCM_TRACE_END);
++    record[1] = cpu_to_le64(sizeof(record));
++    record[2] = cpu_to_le64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++    record[3] = cpu_to_le64(s->pcm_trace_seq);
++    record[15] = cpu_to_le64(reason);
++    record[18] = cpu_to_le64(s->pcm_trace_bytes);
++    if (fwrite(record, sizeof(record), 1, s->pcm_trace_file) != 1) {
++        error_report("virtio-snd PCM trace: terminal record failed: %s",
++                     strerror(errno));
++    }
++    if (fclose(s->pcm_trace_file)) {
++        error_report("virtio-snd PCM trace: close failed: %s", strerror(errno));
++    }
++    s->pcm_trace_file = NULL;
++}
++
++static void virtio_snd_pcm_trace_exit(Notifier *notifier, void *data)
++{
++    VirtIOSound *s = container_of(notifier, VirtIOSound, pcm_trace_exit);
++
++    virtio_snd_pcm_trace_end(s, PCM_TRACE_COMPLETE);
++}
++
++static bool virtio_snd_pcm_trace_init(VirtIOSound *s, Error **errp)
++{
++    uint8_t header[16] = "VSNDPCM1";
++    int fd;
++
++    if (!s->pcm_trace_filename) {
++        return true;
++    }
++    fd = qemu_create(s->pcm_trace_filename, O_WRONLY | O_EXCL | O_BINARY,
++                     0600, errp);
++    if (fd < 0) {
++        return false;
++    }
++    s->pcm_trace_file = fdopen(fd, "wb");
++    if (!s->pcm_trace_file) {
++        error_setg_errno(errp, errno, "virtio-snd PCM trace fdopen");
++        close(fd);
++        return false;
++    }
++    setvbuf(s->pcm_trace_file, NULL, _IONBF, 0);
++    stq_le_p(header + 8, PCM_TRACE_LIMIT);
++    if (fwrite(header, sizeof(header), 1, s->pcm_trace_file) != 1) {
++        error_setg_errno(errp, errno, "virtio-snd PCM trace header");
++        fclose(s->pcm_trace_file);
++        s->pcm_trace_file = NULL;
++        return false;
++    }
++    s->pcm_trace_bytes = sizeof(header);
++    s->pcm_trace_exit.notify = virtio_snd_pcm_trace_exit;
++    qemu_add_exit_notifier(&s->pcm_trace_exit);
++    s->pcm_trace_exit_registered = true;
++    return true;
++}
++
++static void virtio_snd_pcm_trace(VirtIOSoundPCMStream *stream,
++                               VirtIOSoundPCMBuffer *buffer, uint64_t kind,
++                               uint64_t available, uint64_t requested,
++                               uint64_t accepted, uint64_t reason,
++                               const void *raw, size_t raw_len)
++{
++    VirtIOSound *s = stream->s;
++    uint64_t record[PCM_TRACE_WORDS] = { 0 };
++    g_autofree uint8_t *payload = NULL;
++    size_t sg_count, sg_bytes, total;
++
++    if (!s->pcm_trace_file) {
++        return;
++    }
++    sg_count = kind == PCM_TRACE_POP ? buffer->elem->out_num : 0;
++    sg_bytes = sg_count * 16;
++    /* Reserve the terminal record; refuse whole records, never partial PCM. */
++    if (raw_len > PCM_TRACE_LIMIT || sg_bytes > PCM_TRACE_LIMIT ||
++        raw_len + sg_bytes + PCM_TRACE_HEADER >
++        PCM_TRACE_LIMIT - PCM_TRACE_HEADER - s->pcm_trace_bytes) {
++        virtio_snd_pcm_trace_end(s, PCM_TRACE_CAPPED);
++        return;
++    }
++    total = PCM_TRACE_HEADER + sg_bytes + raw_len;
++    if (sg_bytes + raw_len) {
++        payload = g_try_malloc(sg_bytes + raw_len);
++        if (!payload) {
++            error_report("virtio-snd PCM trace: allocation failed; disabled");
++            virtio_snd_pcm_trace_end(s, PCM_TRACE_ERROR);
++            return;
++        }
++    }
++    if (kind == PCM_TRACE_POP) {
++        for (size_t i = 0; i < sg_count; i++) {
++            stq_le_p(payload + i * 16, buffer->elem->out_addr[i]);
++            stq_le_p(payload + i * 16 + 8, buffer->elem->out_sg[i].iov_len);
++        }
++        accepted = iov_to_buf(buffer->elem->out_sg, buffer->elem->out_num,
++                              sizeof(virtio_snd_pcm_xfer), payload + sg_bytes,
++                              raw_len);
++        if (accepted != raw_len) {
++            error_report("virtio-snd PCM trace: short pop snapshot; disabled");
++            virtio_snd_pcm_trace_end(s, PCM_TRACE_ERROR);
++            return;
++        }
++    } else if (raw_len) {
++        memcpy(payload, raw, raw_len);
++    }
++    record[0] = kind;
++    record[1] = total;
++    record[2] = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    record[3] = buffer ? buffer->pcm_trace_seq : 0;
++    record[4] = stream - s->streams;
++    record[5] = stream->pcm_trace_generation;
++    record[6] = stream->state;
++    record[7] = stream->params.channels;
++    record[8] = stream->params.format;
++    record[9] = stream->params.rate;
++    record[10] = buffer ? buffer->offset : 0;
++    record[11] = buffer ? buffer->size : 0;
++    record[12] = available;
++    record[13] = requested;
++    record[14] = accepted;
++    record[15] = reason;
++    record[16] = sg_count;
++    record[17] = raw_len;
++    for (size_t i = 0; i < ARRAY_SIZE(record); i++) {
++        cpu_to_le64s(&record[i]);
++    }
++    if (fwrite(record, sizeof(record), 1, s->pcm_trace_file) != 1 ||
++        (sg_bytes + raw_len &&
++         fwrite(payload, sg_bytes + raw_len, 1, s->pcm_trace_file) != 1)) {
++        error_report("virtio-snd PCM trace: write failed; disabled: %s",
++                     strerror(errno));
++        virtio_snd_pcm_trace_end(s, PCM_TRACE_ERROR);
++        return;
++    }
++    s->pcm_trace_bytes += total;
++}
++
+ static uint32_t supported_formats = BIT(VIRTIO_SND_PCM_FMT_S8)
+                                   | BIT(VIRTIO_SND_PCM_FMT_U8)
+                                   | BIT(VIRTIO_SND_PCM_FMT_S16)
+@@ -115,6 +289,7 @@ static const VMStateDescription vmstate_virtio_snd = {
+ 
+ static const Property virtio_snd_properties[] = {
+     DEFINE_AUDIO_PROPERTIES(VirtIOSound, audio_be),
++    DEFINE_PROP_STRING("x-pcm-trace", VirtIOSound, pcm_trace_filename),
+     DEFINE_PROP_UINT32("jacks", VirtIOSound, snd_conf.jacks,
+                        VIRTIO_SOUND_JACK_DEFAULT),
+     DEFINE_PROP_UINT32("streams", VirtIOSound, snd_conf.streams,
+@@ -348,6 +523,9 @@ uint32_t virtio_snd_set_pcm_params(VirtIOSound *s,
+     virtio_snd_pcm_close(stream);
+ 
+     stream->state = VIRTIO_SND_PCM_STATE_PARAMS_SET;
++    if (s->pcm_trace_file) {
++        stream->pcm_trace_generation++;
++    }
+ 
+     return cpu_to_le32(VIRTIO_SND_S_OK);
+ }
+@@ -828,6 +1006,20 @@ process_cmd(VirtIOSound *s, virtio_snd_ctrl_command *cmd)
+         cmd->resp.code = cpu_to_le32(VIRTIO_SND_S_BAD_MSG);
+     }
+ 
++    if (s->pcm_trace_file && code >= VIRTIO_SND_R_PCM_SET_PARAMS &&
++        code <= VIRTIO_SND_R_PCM_STOP) {
++        uint32_t stream_id;
++
++        if (iov_to_buf(cmd->elem->out_sg, cmd->elem->out_num,
++                       sizeof(virtio_snd_hdr), &stream_id,
++                       sizeof(stream_id)) == sizeof(stream_id) &&
++            le32_to_cpu(stream_id) < s->snd_conf.streams) {
++            virtio_snd_pcm_trace(&s->streams[le32_to_cpu(stream_id)], NULL,
++                                 PCM_TRACE_CONTROL, 0, 0,
++                                 le32_to_cpu(cmd->resp.code), code, NULL, 0);
++        }
++    }
++
+     iov_from_buf(cmd->elem->in_sg,
+                  cmd->elem->in_num,
+                  0,
+@@ -1010,6 +1202,12 @@ static void virtio_snd_handle_tx_xfer(VirtIODevice *vdev, VirtQueue *vq)
+         buffer->offset = 0;
+         stream->latency_bytes += size;
+ 
++        if (vsnd->pcm_trace_file) {
++            buffer->pcm_trace_seq = ++vsnd->pcm_trace_seq;
++            virtio_snd_pcm_trace(stream, buffer, PCM_TRACE_POP,
++                                 0, size, 0, 0, NULL, size);
++        }
++
+         QSIMPLEQ_INSERT_TAIL(&stream->queue, buffer, entry);
+         continue;
+ 
+@@ -1168,6 +1366,9 @@ static void virtio_snd_realize(DeviceState *dev, Error **errp)
+     if (!audio_be_check(&vsnd->audio_be, errp)) {
+         return;
+     }
++    if (!virtio_snd_pcm_trace_init(vsnd, errp)) {
++        return;
++    }
+ 
+     vsnd->vmstate =
+         qemu_add_vm_change_state_handler(virtio_snd_vm_state_change, vsnd);
+@@ -1212,10 +1413,14 @@ static inline void update_latency(VirtIOSoundPCMStream *s, size_t used)
+                        s->latency_bytes - used : 0;
+ }
+ 
+-static inline void return_tx_buffer(VirtIOSoundPCMStream *stream,
+-                                    VirtIOSoundPCMBuffer *buffer)
++static inline void return_tx_buffer_reason(VirtIOSoundPCMStream *stream,
++                                           VirtIOSoundPCMBuffer *buffer,
++                                           uint64_t reason)
+ {
+     virtio_snd_pcm_status resp = { 0 };
++
++    virtio_snd_pcm_trace(stream, buffer, PCM_TRACE_RETURN,
++                         0, 0, 0, reason, NULL, 0);
+     resp.status = cpu_to_le32(VIRTIO_SND_S_OK);
+     update_latency(stream, buffer->size);
+     resp.latency_bytes = cpu_to_le32(stream->latency_bytes);
+@@ -1237,6 +1442,12 @@ static inline void return_tx_buffer(VirtIOSoundPCMStream *stream,
+     virtio_snd_pcm_buffer_free(buffer);
+ }
+ 
++static inline void return_tx_buffer(VirtIOSoundPCMStream *stream,
++                                    VirtIOSoundPCMBuffer *buffer)
++{
++    return_tx_buffer_reason(stream, buffer, PCM_TRACE_FLUSH);
++}
++
+ /*
+  * audio_be_* output callback.
+  *
+@@ -1256,16 +1467,19 @@ static void virtio_snd_pcm_out_cb(void *data, int available)
+         }
+         if (stream->state != VIRTIO_SND_PCM_STATE_STARTED) {
+             /* Stream has stopped, so do not perform audio_be_write. */
+-            return_tx_buffer(stream, buffer);
++            return_tx_buffer_reason(stream, buffer, PCM_TRACE_NOT_STARTED);
+             continue;
+         }
+         if (!buffer->populated) {
+-            iov_to_buf(buffer->elem->out_sg,
++            size_t copied = iov_to_buf(buffer->elem->out_sg,
+                         buffer->elem->out_num,
+                         sizeof(virtio_snd_pcm_xfer),
+                         buffer->data,
+                         buffer->size);
+             buffer->populated = true;
++            virtio_snd_pcm_trace(stream, buffer, PCM_TRACE_POPULATE,
++                                 available, buffer->size, copied, 0,
++                                 buffer->data, buffer->size);
+         }
+         for (;;) {
+             size = audio_be_write(stream->s->audio_be,
+@@ -1273,6 +1487,9 @@ static void virtio_snd_pcm_out_cb(void *data, int available)
+                                 buffer->data + buffer->offset,
+                                 MIN(buffer->size, available));
+             assert(size <= MIN(buffer->size, available));
++            virtio_snd_pcm_trace(stream, buffer, PCM_TRACE_WRITE,
++                                 available, MIN(buffer->size, available), size,
++                                 0, NULL, 0);
+             if (size == 0) {
+                 /* break out of both loops */
+                 available = 0;
+@@ -1283,7 +1500,7 @@ static void virtio_snd_pcm_out_cb(void *data, int available)
+             available -= size;
+             update_latency(stream, size);
+             if (buffer->size < 1) {
+-                return_tx_buffer(stream, buffer);
++                return_tx_buffer_reason(stream, buffer, PCM_TRACE_DRAINED);
+                 break;
+             }
+             if (!available) {
+@@ -1440,6 +1657,11 @@ static void virtio_snd_unrealize(DeviceState *dev)
+     virtio_delete_queue(vsnd->queues[VIRTIO_SND_VQ_TX]);
+     virtio_delete_queue(vsnd->queues[VIRTIO_SND_VQ_RX]);
+     virtio_cleanup(vdev);
++    virtio_snd_pcm_trace_end(vsnd, PCM_TRACE_COMPLETE);
++    if (vsnd->pcm_trace_exit_registered) {
++        qemu_remove_exit_notifier(&vsnd->pcm_trace_exit);
++        vsnd->pcm_trace_exit_registered = false;
++    }
+ }
+ 
+ static int virtio_snd_post_load(VirtIODevice *vdev)
+diff --git a/include/hw/audio/virtio-snd.h b/include/hw/audio/virtio-snd.h
+index 384d2868c1..be6b73edd4 100644
+--- a/include/hw/audio/virtio-snd.h
++++ b/include/hw/audio/virtio-snd.h
+@@ -111,6 +111,8 @@ struct VirtIOSoundPCMBuffer {
+     uint64_t offset;
+     /* Used for the TX queue for lazy I/O copy from `elem` */
+     bool populated;
++    /* Host-only diagnostic identity; never changes PCM ownership. */
++    uint64_t pcm_trace_seq;
+     /*
+      * VirtIOSoundPCMBuffer is an unsized type because it ends with an array of
+      * bytes. The size of `data` is determined from the I/O message's read-only
+@@ -130,6 +132,7 @@ struct VirtIOSoundPCMStream {
+         SWVoiceOut *out;
+     } voice;
+     uint32_t latency_bytes;
++    uint64_t pcm_trace_generation;
+     QSIMPLEQ_HEAD(, VirtIOSoundPCMBuffer) queue;
+ };
+ 
+@@ -198,6 +201,12 @@ struct VirtIOSound {
+     uint64_t features;
+     VirtIOSoundPCMStream *streams;
+     AudioBackend *audio_be;
++    char *pcm_trace_filename;
++    FILE *pcm_trace_file;
++    uint64_t pcm_trace_bytes;
++    uint64_t pcm_trace_seq;
++    Notifier pcm_trace_exit;
++    bool pcm_trace_exit_registered;
+     VMChangeStateEntry *vmstate;
+     virtio_snd_config snd_conf;
+     QTAILQ_HEAD(, virtio_snd_ctrl_command) cmdq;

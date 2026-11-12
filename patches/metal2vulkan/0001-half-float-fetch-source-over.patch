@@ -1,0 +1,440 @@
+From: macos-local research
+Subject: [PATCH] Blend mandatory framebuffer fetch source-over in its ordered interlock
+
+Keep ordinary attachment blending unchanged except the native-window BGRA8Unorm
+premultiplied source-over form, alongside the existing half-float source-over path.
+The storage form retains the current destination through source-over, depth/stencil
+test gating and write-mask preservation. Precision notes remain in force.
+
+diff --git a/crates/metal2vulkan/src/cache/mod.rs b/crates/metal2vulkan/src/cache/mod.rs
+index 4528659..ed86c7a 100644
+--- a/crates/metal2vulkan/src/cache/mod.rs
++++ b/crates/metal2vulkan/src/cache/mod.rs
+@@ -60,7 +60,7 @@ mod tests;
+ /// unchanged version, and its bless records the version. Independent of the crate's version and of
+ /// [`ARTIFACT_FORMAT_VERSION`]. The commit that bumps it says what changed; this comment keeps no
+ /// history.
+-pub const SEMANTICS_VERSION: u32 = 1691;
++pub const SEMANTICS_VERSION: u32 = 1692;
+ 
+ /// The byte-layout version of encoded artifacts (`CompiledFunction::to_bytes` and the
+ /// [`PipelineArtifact`] encodings). Every encoded artifact carries it, and a decode under another
+diff --git a/crates/metal2vulkan/src/lower/fragment/fetch.rs b/crates/metal2vulkan/src/lower/fragment/fetch.rs
+index c548c02..f7736d6 100644
+--- a/crates/metal2vulkan/src/lower/fragment/fetch.rs
++++ b/crates/metal2vulkan/src/lower/fragment/fetch.rs
+@@ -33,8 +33,11 @@
+ //! - for a written attachment whose write mask covers some of its format's channels (one that
+ //!   covers none stores nothing, so none of this bears on it): no blending but one and zero, added,
+ //!   for color and alpha, which stores the source as no blending does (a signed normalized format's
+-//!   aside: its NaN stores another code under it; any other blend would need Metal's blend
+-//!   arithmetic in the shader, which is not measured), no alpha to coverage (it can drop the
++//!   aside: its NaN stores another code under it), or premultiplied source-over into a half-float
++//!   attachment with a four-lane half/float output, computed at float precision inside the same
++//!   interlock. The exact half-arithmetic model remains selected by `HalfBlendPolicy::Exact`
++//!   for a no-fast-math half4 output; source/conversion precision notes remain otherwise.
++//!   No alpha to coverage (it can drop the
+ //!   fragment's samples), no signed normalized format under a write mask that keeps some of its
+ //!   channels (its two codes of -1 read alike, so a channel written back would lose the texel's
+ //!   bits), and, with a depth or stencil attachment, early fragment tests: the module declares them
+@@ -323,9 +326,10 @@ pub struct StorageView {
+     /// declaration's texels are the raw format's `uint`s ([`numeric`](Self::numeric)), and a read
+     /// decodes Metal's tile value. `None` for a format held directly.
+     pub extended: Option<ExtendedRange>,
+-    /// The blend a write of an extended-range attachment computes in the shader, from the texel
++    /// The blend a write of an extended-range or half-float attachment computes in the shader, from the texel
+     /// it reads first (`extended_range::blend::blend`): the pipeline's, where it enables blending
+-    /// there. `None` for an unblended write, no write, or another format.
++    /// there. `None` for an unblended write, no write, or another format. Half-float source-over
++    /// uses float arithmetic unless the exact half-output model is selected.
+     pub blend: Option<BlendEquation>,
+     /// The unsigned-integer format of the texel size an sRGB attachment is viewed in
+     /// (`StorageAttachmentUse::uint_view`): the declaration's texels are its `uint`s, which a
+@@ -364,6 +368,9 @@ impl StorageView {
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct StorageColor {
+     pub view: StorageView,
++    /// The selected blend uses the existing exact half-arithmetic model. A mandatory fetch
++    /// with premultiplied source-over otherwise uses float arithmetic inside the interlock.
++    pub half_blend: bool,
+     /// The function writes the attachment.
+     pub writes: bool,
+     /// The returned value's field that holds the write (0 for a returned value itself) and the
+@@ -383,6 +390,51 @@ fn not_implemented() -> Unsupported {
+     Unsupported::not_implemented(Feature::FramebufferFetch)
+ }
+ 
++/// Premultiplied source-over, in both RGB and alpha: source + destination*(1-source.a).
++/// This blend needs no second source or blend-color state.
++fn source_over(eq: BlendEquation) -> bool {
++    use crate::metal::{BlendFactor as F, BlendOperation as O};
++    eq == BlendEquation {
++        source_rgb: F::One,
++        destination_rgb: F::OneMinusSourceAlpha,
++        rgb_operation: O::Add,
++        source_alpha: F::One,
++        destination_alpha: F::OneMinusSourceAlpha,
++        alpha_operation: O::Add,
++    }
++}
++
++/// The first output's four floating-point lanes, with no second output at that color.
++fn floating_output4(cx: &SelectCx<'_>, color: u32) -> Result<Option<FloatFmt>, Error> {
++    let mut result = None;
++    for (o, ty) in cx
++        .entry
++        .ep
++        .outputs
++        .iter()
++        .zip(stage_io::output_types(cx)?.1)
++    {
++        if let OutputRole::RenderTarget {
++            attachment: AbiInt::Const(a),
++            index,
++            ..
++        } = o.role
++        {
++            if a != color {
++                continue;
++            }
++            if index != 0 {
++                return Ok(None);
++            }
++            let f = super::color::form(cx, ty)?;
++            if f.lanes == 4 && matches!(f.float_fmt(), Some(FloatFmt::Half | FloatFmt::F32)) {
++                result = f.float_fmt();
++            }
++        }
++    }
++    Ok(result)
++}
++
+ /// Whether `format`'s float channels are narrower than 32 bits (a half-float or a packed float
+ /// format), whose texels a read decodes into `float`.
+ fn narrow_float(format: vk::Format) -> bool {
+@@ -540,9 +592,13 @@ pub(crate) fn storage_form(
+         && use_.math == extended_range::blend::BlendMath::Rounded
+         && half_float_format(pf)
+         && attachment.blending_enabled;
+-    let blend = attachment
+-        .equation
+-        .filter(|_| (extended.is_some_and(|e| !e.padded()) || half_blend) && stores);
++    let ordinary_over = !inputs.half_blends.contains(&color)
++        && (half_float_format(pf) || matches!(pf, crate::metal::PixelFormat::BGRA8Unorm))
++        && attachment.blending_enabled
++        && attachment.equation.is_some_and(source_over);
++    let blend = attachment.equation.filter(|_| {
++        (extended.is_some_and(|e| !e.padded()) || half_blend || ordinary_over) && stores
++    });
+     if let Some(eq) = blend {
+         let written = all.intersection(attachment.write_mask);
+         let planned = match extended {
+@@ -995,7 +1051,11 @@ pub(super) fn plan(cx: &mut SelectCx<'_>) -> Result<(), Error> {
+         let form = match form {
+             // Metal's 16-bit float blend, modelled for a `half4` output alone.
+             Ok(view) if view.blend.is_some() && view.extended.is_none() => {
+-                match half4_output(cx.entry, color) {
++                match half4_output(cx.entry, color)
++                    || (!optional
++                        && view.blend.is_some_and(source_over)
++                        && floating_output4(cx, color)?.is_some())
++                {
+                     true => Ok((view, None)),
+                     false => Err(not_implemented()),
+                 }
+@@ -1039,6 +1099,19 @@ pub(super) fn plan(cx: &mut SelectCx<'_>) -> Result<(), Error> {
+         };
+         match form {
+             Ok((view, b)) => {
++                let half_blend = view.blend.is_some()
++                    && view.extended.is_none()
++                    && cx.profile.fields().half_blend == HalfBlendPolicy::Exact
++                    && half4_output(cx.entry, color);
++                if view.blend.is_some() && view.extended.is_none() && !half_blend {
++                    // Preserve the existing source/conversion precision notices. Mandatory
++                    // fetch cannot defer its blend to fixed function after leaving the lock.
++                    cx.precision.insert(PrecisionNote::DeviceColorConversion);
++                    if floating_output4(cx, color)? == Some(FloatFmt::Half) {
++                        cx.precision
++                            .insert(crate::lower::arith::output_precision::half_output_note(cx));
++                    }
++                }
+                 // The blend color, as push data, where the blend reads it.
+                 if b.as_ref()
+                     .is_some_and(extended_range::Blend::reads_constant)
+@@ -1061,6 +1134,7 @@ pub(super) fn plan(cx: &mut SelectCx<'_>) -> Result<(), Error> {
+                     color,
+                     StorageColor {
+                         view,
++                        half_blend,
+                         writes,
+                         output: None,
+                         shadowed,
+@@ -1751,7 +1825,8 @@ pub(super) fn emit_return(
+             (None, _) => {
+                 // Metal's 16-bit float blend of a `half4` output, over the texel.
+                 let part = match sc.view.blend {
+-                    Some(eq) => half_blended(cx, fb, color, &sc, eq, part)?,
++                    Some(eq) if sc.half_blend => half_blended(cx, fb, color, &sc, eq, part)?,
++                    Some(_) => source_over_blended(cx, fb, color, &sc, part)?,
+                     None => part,
+                 };
+                 let part = if sc.view.merges() {
+@@ -1809,6 +1884,34 @@ pub(super) fn emit_return(
+ /// One storage write: the image, the texel's coordinate, the texel, and the image operands.
+ type Write = (SValue, SValue, SValue, ImageOperands);
+ 
++/// The mandatory-fetch source-over blend, at float precision. Both the destination read
++/// and its write remain inside the same ordered pixel interlock as the function's fetch.
++/// Half outputs retain their source-precision note; the exact half model remains opt-in.
++fn source_over_blended(
++    cx: &mut EmitCx<'_>,
++    fb: &mut FunctionBuilder<'_>,
++    color: u32,
++    sc: &StorageColor,
++    part: SValue,
++) -> BResult<SValue> {
++    if !sc.view.blend.is_some_and(source_over) {
++        return Err(cx.fail("a storage blend outside premultiplied source-over"));
++    }
++    let (image, at, operands) = image_and_texel(cx, fb, color, sc.view.samples)?;
++    let mem = memory_model::coherence(cx.plan).texel(fb)?;
++    let texel = fb.read(image, at, &operands, mem)?;
++    let destination = as_held(fb, texel, sc.view.numeric)?;
++    let vector = Form {
++        held: Held::Float(FloatFmt::F32),
++        lanes: 4,
++    };
++    let alpha = fb.vector_shuffle(part, part, &[3, 3, 3, 3])?;
++    let one = ops::splat(fb, vector, u64::from(1.0f32.to_bits()))?;
++    let remaining = fb.binary_no_contraction(BinOp::FSub, one, alpha)?;
++    let kept = fb.binary_no_contraction(BinOp::FMul, destination, remaining)?;
++    fb.binary_no_contraction(BinOp::FAdd, part, kept)
++}
++
+ /// The `half4` output `part` (four `f32`s holding its `half`s) of a module without fast math
+ /// blended into 16-bit float attachment `color` by Metal's blend `eq`
+ /// (`extended_range::Blend::half_float`): the texel read first at the invocation's pixel (and
+@@ -1848,7 +1951,7 @@ pub(super) fn blends_half(cx: &SelectCx<'_>, color: u32) -> bool {
+         .fragment
+         .fetch
+         .get(&color)
+-        .is_some_and(|sc| sc.view.blend.is_some() && sc.view.extended.is_none())
++        .is_some_and(|sc| sc.half_blend)
+ }
+ 
+ /// Output `part` (of `form`, in its lowered representation) of storage-form attachment `color`
+diff --git a/crates/metal2vulkan/src/lower/fragment/fetch/tests.rs b/crates/metal2vulkan/src/lower/fragment/fetch/tests.rs
+index 8662fde..0437965 100644
+--- a/crates/metal2vulkan/src/lower/fragment/fetch/tests.rs
++++ b/crates/metal2vulkan/src/lower/fragment/fetch/tests.rs
+@@ -43,6 +43,48 @@ const READS: ColorUse = ColorUse {
+     ..WRITES
+ };
+ 
++/// A fetched half-float target can do premultiplied source-over in the same ordered lock;
++/// the existing coverage, amplification and late-test guards are still binding.
++#[test]
++fn source_over_keeps_the_storage_forms_test_guards() {
++    use crate::metal::{BlendFactor as F, BlendOperation as O};
++    let p = profile("nvidia-rtx50-linux", &[]);
++    let mut inputs = state(PixelFormat::RGBA16Float, |c| {
++        c.blending_enabled = true;
++        c.source_rgb_blend_factor = F::One;
++        c.destination_rgb_blend_factor = F::OneMinusSourceAlpha;
++        c.rgb_blend_operation = O::Add;
++        c.source_alpha_blend_factor = F::One;
++        c.destination_alpha_blend_factor = F::OneMinusSourceAlpha;
++        c.alpha_blend_operation = O::Add;
++    });
++    inputs.depth_or_stencil = true;
++    assert!(form(&inputs, false, WRITES, &p)
++        .unwrap()
++        .blend
++        .is_some_and(source_over));
++    let late = ColorUse {
++        early_tests: false,
++        ..WRITES
++    };
++    assert_eq!(form(&inputs, false, late, &p), Err(not_implemented()));
++    assert!(form(
++        &inputs,
++        false,
++        ColorUse {
++            draw_tested: true,
++            ..late
++        },
++        &p
++    )
++    .is_ok());
++    inputs.alpha_to_coverage = true;
++    assert_eq!(form(&inputs, false, WRITES, &p), Err(not_implemented()));
++    inputs.alpha_to_coverage = false;
++    inputs.amplified = true;
++    assert_eq!(form(&inputs, false, WRITES, &p), Err(not_implemented()));
++}
++
+ fn form(
+     inputs: &FramebufferFetchInputs,
+     multisampled: bool,
+@@ -137,6 +179,27 @@ fn a_clean_state_takes_the_storage_form() {
+     }
+ }
+ 
++/// The native display path's BGRA8Unorm premultiplied source-over blend takes the same
++/// ordered storage form as the measured half-float path.
++#[test]
++fn bgra8_source_over_takes_the_storage_form() {
++    use crate::metal::{BlendFactor as F, BlendOperation as O};
++    let p = profile("nvidia-rtx50-linux", &[]);
++    let inputs = state(PixelFormat::BGRA8Unorm, |c| {
++        c.blending_enabled = true;
++        c.source_rgb_blend_factor = F::One;
++        c.destination_rgb_blend_factor = F::OneMinusSourceAlpha;
++        c.rgb_blend_operation = O::Add;
++        c.source_alpha_blend_factor = F::One;
++        c.destination_alpha_blend_factor = F::OneMinusSourceAlpha;
++        c.alpha_blend_operation = O::Add;
++    });
++    let view = form(&inputs, false, WRITES, &p).expect("BGRA8 source-over storage form");
++    assert!(view.blend.is_some_and(source_over));
++    assert_eq!(view.format, vk::Format::B8G8R8A8_UNORM);
++    assert_eq!(view.numeric, SampledType::Float);
++}
++
+ /// What the form does not model is `NotImplemented`: an amplified pipeline, a one- or two-channel
+ /// sRGB format, and,
+ /// for a written attachment only, blending (but one and zero, added), a signed normalized format under a write mask that
+diff --git a/crates/metal2vulkan/src/pipeline/compile/tests.rs b/crates/metal2vulkan/src/pipeline/compile/tests.rs
+index 91d0562..cc888ed 100644
+--- a/crates/metal2vulkan/src/pipeline/compile/tests.rs
++++ b/crates/metal2vulkan/src/pipeline/compile/tests.rs
+@@ -1529,6 +1529,115 @@ fn a_framebuffer_fetch_pipeline_is_ordered_exactly_where_the_device_orders_it()
+     read_unordered(&compile(&without, lenient(), &d).expect("unordered"));
+ }
+ 
++/// The source-over fetch uses storage inside the ordered interlock, beside depth/stencil
++/// and two masked-off attachments. Compile and validate the real authored AIR, not a plan mock.
++#[test]
++fn a_half_float_source_over_fetch_pipeline_compiles_ordered_beside_depth() {
++    use crate::device::requirements::VkFeature;
++    let (Some(io), Some(fetch)) = (fixture("stage_io"), fixture("exf_fetch_blend")) else {
++        return;
++    };
++    let vertex = Library::from_air(&io)
++        .unwrap()
++        .function("stage_io_vertex_position")
++        .unwrap();
++    let fragment = Library::from_air(&fetch)
++        .unwrap()
++        .function("exf_fetch_blend")
++        .unwrap();
++    let mut d =
++        RenderPipelineDescriptor::new(StageSource::Function(FunctionDescriptor::new(vertex)));
++    d.fragment = Some(StageSource::Function(FunctionDescriptor::new(fragment)));
++    let mut color = ColorAttachmentDescriptor::new(metal::PixelFormat::RGBA16Float);
++    color.blending_enabled = true;
++    color.destination_rgb_blend_factor = metal::BlendFactor::OneMinusSourceAlpha;
++    color.destination_alpha_blend_factor = metal::BlendFactor::OneMinusSourceAlpha;
++    d.color_attachments[0] = Some(color);
++    for (i, pf) in [
++        (1, metal::PixelFormat::RG16Float),
++        (2, metal::PixelFormat::RGBA16Float),
++    ] {
++        let mut c = ColorAttachmentDescriptor::new(pf);
++        c.write_mask = metal::ColorWriteMask::NONE;
++        d.color_attachments[i] = Some(c);
++    }
++    d.depth_format = Some(metal::PixelFormat::Depth32FloatStencil8);
++    d.stencil_format = d.depth_format;
++    for policy in [
++        DevicePolicy::default(),
++        DevicePolicy::default().exact_answers(),
++    ] {
++        let dev = Device::new(description("nvidia-rtx50-linux"), policy).unwrap();
++        let pipe = dev
++            .compile_render_pipeline(&d, &Budget::standard())
++            .unwrap();
++        assert!(pipe
++            .requirements
++            .features
++            .contains(&VkFeature::FragmentShaderPixelInterlock));
++        assert!(pipe.graphics.input_attachments.is_empty());
++        assert_eq!(pipe.graphics.storage_attachments.len(), 1);
++        assert_eq!(pipe.graphics.storage_attachments[0].color_index, 0);
++        for stage in &pipe.stages {
++            l3(&stage.spirv, &pipe.requirements, &dev);
++        }
++    }
++}
++
++#[test]
++fn a_bgra8_source_over_fetch_pipeline_compiles_ordered_beside_depth() {
++    use crate::device::requirements::VkFeature;
++    let (Some(io), Some(fetch)) = (fixture("stage_io"), fixture("exf_fetch_blend")) else {
++        return;
++    };
++    let vertex = Library::from_air(&io)
++        .unwrap()
++        .function("stage_io_vertex_position")
++        .unwrap();
++    let fragment = Library::from_air(&fetch)
++        .unwrap()
++        .function("exf_fetch_blend")
++        .unwrap();
++    let mut d =
++        RenderPipelineDescriptor::new(StageSource::Function(FunctionDescriptor::new(vertex)));
++    d.fragment = Some(StageSource::Function(FunctionDescriptor::new(fragment)));
++    let mut color = ColorAttachmentDescriptor::new(metal::PixelFormat::BGRA8Unorm);
++    color.blending_enabled = true;
++    color.destination_rgb_blend_factor = metal::BlendFactor::OneMinusSourceAlpha;
++    color.destination_alpha_blend_factor = metal::BlendFactor::OneMinusSourceAlpha;
++    d.color_attachments[0] = Some(color);
++    for (i, pf) in [
++        (1, metal::PixelFormat::RG16Float),
++        (2, metal::PixelFormat::RGBA16Float),
++    ] {
++        let mut c = ColorAttachmentDescriptor::new(pf);
++        c.write_mask = metal::ColorWriteMask::NONE;
++        d.color_attachments[i] = Some(c);
++    }
++    d.depth_format = Some(metal::PixelFormat::Depth32FloatStencil8);
++    d.stencil_format = d.depth_format;
++    for policy in [
++        DevicePolicy::default(),
++        DevicePolicy::default().exact_answers(),
++    ] {
++        let dev = Device::new(description("nvidia-rtx50-linux"), policy).unwrap();
++        let pipe = dev
++            .compile_render_pipeline(&d, &Budget::standard())
++            .unwrap();
++        assert!(pipe
++            .requirements
++            .features
++            .contains(&VkFeature::FragmentShaderPixelInterlock));
++        assert!(pipe.graphics.input_attachments.is_empty());
++        assert_eq!(pipe.graphics.storage_attachments.len(), 1);
++        assert_eq!(pipe.graphics.storage_attachments[0].color_index, 0);
++        for stage in &pipe.stages {
++            l3(&stage.spirv, &pipe.requirements, &dev);
++        }
++    }
++}
++
++
+ /// The SPIR-V `OpTypeImage`s of `words` as `(dim, arrayed, ms)` operand triples, and whether a
+ /// variable is decorated `BuiltIn SampleId`.
+ fn images_and_sample_id(words: &[u32]) -> (Vec<(u32, u32, u32)>, bool) {
+diff --git a/docs/FAST-PATHS.md b/docs/FAST-PATHS.md
+index 7e840a1..552fad3 100644
+--- a/docs/FAST-PATHS.md
++++ b/docs/FAST-PATHS.md
+@@ -38,7 +38,7 @@ a cell that names another source took its numbers there.
+ | A `half` read from its bits (a load, a reinterpretation, a texel's bits) outside every loop is widened by the device (`UnpackHalf2x16`), not decoded exactly. | `half_rounding = HalfRoundingPolicy::Native` | `half_rounding = HalfRoundingPolicy::Exact` (with the row above) | A half denormal may read as zero where the device flushes them; NaN payload the device's. `NativeHalfConversion` (`native-half-conversion`) | Not measured alone on today's master. At its merge: A2X 1.04-1.07 s with it against 1.27-1.28 s with the exact decode; Xgc unchanged |
+ | The `half` conversion converts the value itself (no `NoContraction` barrier), so the device's compiler may fold it into the instruction computing the value, rounding once. | `half_rounding = HalfRoundingPolicy::Native` | `half_rounding = HalfRoundingPolicy::Exact` (with the rows above) | The row above's: on NVIDIA (RTX 3090), and on lavapipe for a loaded texel (Mesa 26.0.8), the pair is dropped whether or not the barrier stands, so the barrier does not restore the rounding there. `NativeHalfConversion` (`native-half-conversion`) | At its merge: A2X 0.99-1.02 s without the barrier against 1.00-1.05 s with it; Xgc within a round's spread |
+ | A `half` texel's NaN is the rounding's own NaN, not the texel's bits (the keep's four instructions a texel are left out). | `half_rounding = HalfRoundingPolicy::Native` and `nan_and_min_max = NanMinMaxPolicy::Native` | `nan_and_min_max = NanMinMaxPolicy::Exact` (the keep under native half rounding, master ecd39568bb); `half_rounding = HalfRoundingPolicy::Exact` also keeps it, at that row's cost. The same switch also gives Metal's full rule: `0x7e00` for every NaN but a one-texel read, nearest sample or gather of a 16-bit float texture, by the slot's format class read as data, a heap handle's class index and a runtime sampler's filter. A gather with a `half` result fetches its four texels where the class is a half-float one, since NVIDIA's gather hands back every NaN as `0x7fffffff`. **Not yet exact:** a cube gather, bicubic and emulated linear, fetched or compared samples. Possible, not built: the runtime sampler's filter read as push data rather than specialized, which would spare the remake below. Measured on the RTX 5080: under the switch no `half` lane of the runtime lane's texel reads, samples and gathers differs from Metal's (1,469 differ by default). Under the switch `DeviceNanEncoding` is still announced; the consumer logs notes, so no device fact is built to drop it | NaN bits the device's (`0x7FFF` on the RTX 5080), where Metal hands back a 16-bit float texel's own bits on a read, nearest sample or gather, and `0x7e00` for a 32-bit or small float texel's NaN and a linear sample's. `NativeHalfConversion` (`native-half-conversion`); the read also records `DeviceNanEncoding` (`device-nan-encoding`) | Measured on top of the NaN switch's own row (its probe with the keep, c0a814a13, against its probe without, 3e8a01c54): A2X 341,299 → 347,519 words, 1.82-1.86 → 1.81-1.87 s, GPU 0.115-0.117 → 0.115-0.116 ms, within noise; Xgc14 and Xgc15 read no `half` texel (words unchanged). The full rule (its probe a5c642ebe against the same tip without it, 851650c81): A2X 347,519 → 372,429 words (+7.2%), creation 1.85-1.88 → 1.99-2.04 s; where a linear runtime sampler is bound at the draw the sampler word's filter is now specialized, so the first draw remakes (1.94-1.96 s) and its GPU time rises 0.115-0.117 → 0.124-0.125 ms; with a nearest sampler GPU 0.115-0.116 → 0.115-0.117 ms; Xgc14 and Xgc15 words unchanged. On the RTX 3090 the same pair: A2X creation 2.91-3.06 → 3.17-3.23 s, the first draw's remake 3.0 s and its GPU time 0.17-0.18 → 0.79-1.15 ms, with a nearest sampler 0.17-0.18 ms both |
+-| A fragment function without fast math returns a `half` color to a blended attachment: the device blends in its own arithmetic and rounds once, where Metal blends a 16-bit float attachment in `half` arithmetic (each factor, product and sum rounded to `half`). | `half_blend = HalfBlendPolicy::Device` | `half_blend = HalfBlendPolicy::Exact`: the function computes Metal's blend in the interlocked storage form, for a `half4` output into `R16Float`, `RG16Float` or `RGBA16Float` where that form is exact for the pipeline (RADV, ANV, NVIDIA, MoltenVK); elsewhere, and for lavapipe, 32-bit float, 8-bit, a module naming no math mode or a blend of the second source, the device's blend and its note stay | 2.5 `half` ulps at the largest operand on NVIDIA (the blend color and one minus it), two on RADV, ANV and lavapipe (16-bit float); two `float` ulps (32-bit float, one on NVIDIA); one or two codes (8-bit, extended range); MoltenVK stores Metal's bytes. Measured with and without the factors' magnitudes at 0bcc0163e5. `HalfOutputPrecision` (`half-output-precision`) | A probe at 924fc11603 (a `half4` over a 1920x1080 `RGBA16Float` target, One / OneMinusSourceAlpha): making 11.1 → 24.0 ms; GPU 25 → 82 us one draw, 506 → 2291 us 32 overlapping draws (the interlock orders them). RTX 3090 (the same draw at 50a065eb98): making 12.9 → 27.4 ms; GPU 45 → 115 us one draw, 648 → 3268 us 32 overlapping draws |
++| A fragment function without fast math returns a `half` color to a blended attachment: the device blends in its own arithmetic and rounds once, where Metal blends a 16-bit float attachment in `half` arithmetic (each factor, product and sum rounded to `half`). | `half_blend = HalfBlendPolicy::Device`; a mandatory ordered framebuffer fetch under premultiplied source-over into a half-float target computes the blend in float arithmetic inside its pixel interlock, retaining source/conversion precision notes | `half_blend = HalfBlendPolicy::Exact`: the function computes Metal's blend in the interlocked storage form, for a `half4` output into `R16Float`, `RG16Float` or `RGBA16Float` where that form is exact for the pipeline (RADV, ANV, NVIDIA, MoltenVK); elsewhere, and for lavapipe, 32-bit float, 8-bit, a module naming no math mode or a blend of the second source, the device's blend and its note stay | 2.5 `half` ulps at the largest operand on NVIDIA (the blend color and one minus it), two on RADV, ANV and lavapipe (16-bit float); two `float` ulps (32-bit float, one on NVIDIA); one or two codes (8-bit, extended range); MoltenVK stores Metal's bytes. Measured with and without the factors' magnitudes at 0bcc0163e5. `HalfOutputPrecision` (`half-output-precision`) | A probe at 924fc11603 (a `half4` over a 1920x1080 `RGBA16Float` target, One / OneMinusSourceAlpha): making 11.1 → 24.0 ms; GPU 25 → 82 us one draw, 506 → 2291 us 32 overlapping draws (the interlock orders them). RTX 3090 (the same draw at 50a065eb98): making 12.9 → 27.4 ms; GPU 45 → 115 us one draw, 648 → 3268 us 32 overlapping draws |
+ | A computed `half` or `float` color blended into an extended-range attachment (`BGR10_XR`, `BGRA10_XR`, `RGB10A8_2P_XR10`) rounds the blend's source as a loaded one; Metal's compiler rounds it by how it computed it. Every device. | The in-shader blend's loaded rounding (no switch) | **Not built yet:** Metal's rounding per shape is probed, not modelled | One code. `ExtendedRangeBlendSource` (`extended-range-blend-source`), `ExtendedRangeFloatBlendSource` (`extended-range-float-blend-source`) | Not measured |
+ | A bicubic sample of an 8- or 16-bit normalized texture sums its taps exactly and rounds half up; Metal truncates its row terms, row sums and column terms first. Every device. | The exact sum (no switch) | **Not built yet:** Metal's datapath is pinned (17.75M lanes measured, no miss); its emitter is not written | One grid step (1/4080 at 8 bits) within about 2^-21 of a tie. `BicubicFilterArithmetic` (`bicubic-filter-arithmetic`) | Not measured (Metal's form is expected no larger) |
+ 

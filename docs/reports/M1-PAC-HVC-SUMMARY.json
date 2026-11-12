@@ -1,0 +1,110 @@
+{
+  "recorded_at": "2026-10-14T06:30:12.705399+00:00",
+  "project_root": "/workspace/macos-local",
+  "source_baseline_commit": "ade0657",
+  "stage": "M1_in_progress",
+  "macos_booted": false,
+  "architectural_pac_baseline": {
+    "targets": [
+      "headless VMApple",
+      "modern Reims VMApple"
+    ],
+    "passed": true,
+    "checks": [
+      "IA/IB/DA/DB signing and authentication",
+      "wrong-key/wrong-modifier rejection",
+      "key restoration",
+      "XPACI",
+      "PACGA key dependency"
+    ],
+    "apple_hvc_when_model_off": -1,
+    "baseline_impdef_algorithm_is_not_cryptographic": true,
+    "report": "runs/e06-pauth-hvc-baseline-results.json"
+  },
+  "experimental_hvc_model": {
+    "default_enabled": false,
+    "switch": "x-pac-software-model=on",
+    "test_cpu": "max,pauth-qarma5=on",
+    "passed": true,
+    "vcpus": 2,
+    "checks": [
+      "HVC initial/defaults/rekey",
+      "PAC rejection after key change",
+      "EL0/EL1 key diversifier transitions",
+      "EL0 HVC denial",
+      "unknown/invalid call no mutation",
+      "two CPU isolation and defaults",
+      "CPU_OFF/ON state reset"
+    ],
+    "key_derivation": "Local HMAC-SHA256 model with per-VM random secret; not Apple hardware derivation",
+    "apple_bitwise_cipher_equivalence": false,
+    "actual_macos27_abi_verified": false,
+    "migration_supported": false,
+    "report": "runs/e06-pauth-hvc-model-results.json"
+  },
+  "expected_refusals": [
+    {
+      "case": "no-pauth",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true
+    },
+    {
+      "case": "migration-refused",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true
+    },
+    {
+      "case": "model-off",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true
+    }
+  ],
+  "regressions": {
+    "platform_contracts_expectations_met": 10,
+    "guest_fifo_roundtrip": true,
+    "reims_arm16k_existing_smoke": "passed; runs/e06-pauth-post-model-integrated-smoke.log",
+    "qemu_4k_control_rebuilt": true
+  },
+  "source_persistence": {
+    "reims_changed_files": 14,
+    "qemu_changed_files": 6,
+    "passed": true,
+    "clean_host_full_build": false
+  },
+  "restore_transport": {
+    "local_bdif_usb_command_handling": false,
+    "external_candidate_commit": "657bb2423ec8d572b22a97dd33563dbba1680e6a",
+    "candidate_patch_apply_check": true,
+    "candidate_patch_applied": false,
+    "restore_runtime_tested": false,
+    "avpbooter_present": false,
+    "installed_aux_root_identity_bundle_present": false
+  },
+  "other_worktree_files_preserved": [
+    "experiments/E05-boot/audit-device-tree.py",
+    "experiments/E05-boot/extract-small-boot-components.py",
+    "experiments/E06-platform-contracts/clock.c",
+    "experiments/E06-platform-contracts/run-clock.py"
+  ],
+  "small_firmware_components_observed": {
+    "present": true,
+    "count": 5,
+    "file_hashes_match_existing_report": true,
+    "extracted_or_executed_by_this_pac_hvc_step": false,
+    "apple_signature_verified": false,
+    "note": "Observed in separate uncommitted work; this step did not rerun its extraction, device-tree or clock experiment"
+  },
+  "full_report": "docs/reports/M1-PAC-HVC-RESULTS.json",
+  "commands": [
+    "make pauth-baseline",
+    "make pauth-model",
+    "make pauth-guards",
+    "make platform-contracts",
+    "make reims-fifo-roundtrip",
+    "make check-research-patches"
+  ],
+  "next": "Validate matched boot chain and missing DFU transport; separately verify existing clock/DeviceTree work and full target guest ABI"
+}

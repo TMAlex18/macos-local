@@ -1,0 +1,133 @@
+From: macos-local local PAuth research
+Subject: [PATCH] Add default-off bounded per-vCPU exact ComputePAC memoization
+Base-After: 0021-pauth-grouped-permutations.patch
+
+Local experiment, not an upstream contribution. Cache only the pure QARMA3/5
+ComputePAC result. Compare full data, modifier, both key halves and algorithm;
+index with non-key inputs only. PAC insertion and authentication are unchanged.
+The 64-entry cache is per-vCPU, reset-cleared and excluded from migration.
+The inexpensive implementation-defined algorithm remains uncached. No inputs,
+keys or derived results are logged. Enable explicitly with x-pauth-memo=on.
+
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -145,6 +145,17 @@
+ typedef struct ARMPACKey {
+     uint64_t lo, hi;
+ } ARMPACKey;
++
++#define ARM_PAUTH_MEMO_ENTRIES 64
++
++/* Derived TCG QARMA results only; never part of architectural/migrated state. */
++typedef struct ARMPAuthMemoEntry {
++    uint64_t data, modifier;
++    ARMPACKey key;
++    uint64_t result;
++    uint8_t algorithm;
++    bool valid;
++} ARMPAuthMemoEntry;
+ 
+ /* See the commentary above the TBFLAG field definitions.  */
+ typedef struct CPUARMTBFlags {
+@@ -769,6 +780,9 @@
+      */
+     bool event_register;
+ 
++    /* Per-vCPU pure-function memoization; reset also clears cached key copies. */
++    ARMPAuthMemoEntry pauth_memo[ARM_PAUTH_MEMO_ENTRIES];
++
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+ 
+@@ -1097,6 +1111,9 @@
+ 
+     /* QOM property to indicate we should use the back-compat QARMA5 default */
+     bool backcompat_pauth_default_use_qarma5;
++
++    /* Default-off local experiment; complete ComputePAC inputs are compared. */
++    bool prop_pauth_memo;
+ 
+     /* Specify the number of cores in this CPU cluster. Used for the L2CTLR
+      * register.
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -2539,6 +2539,7 @@
+     DEFINE_PROP_BOOL("x-cntfrq-exact", ARMCPU, gt_cntfrq_exact, false),
+     DEFINE_PROP_BOOL("backcompat-pauth-default-use-qarma5", ARMCPU,
+                       backcompat_pauth_default_use_qarma5, false),
++    DEFINE_PROP_BOOL("x-pauth-memo", ARMCPU, prop_pauth_memo, false),
+     DEFINE_PROP_BOOL("cpu-on-copies-pauth-keys", ARMCPU,
+                      cpu_on_copies_pauth_keys, false),
+ };
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -1161,6 +1161,9 @@
+     bool fail = false;
+     bool ignore_s_regs;
+     int i, v;
++
++    /* Optional derived cache is local to this CPU and is not migrated. */
++    memset(env->pauth_memo, 0, sizeof(env->pauth_memo));
+ 
+     trace_cpu_post_load(cpu->cpreg_vmstate_array_len,
+                         cpu->cpreg_array_len);
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -241,16 +241,49 @@
+     return qemu_xxhash64_4(data, modifier, key.lo, key.hi);
+ }
+ 
++static unsigned pauth_memo_slot(uint64_t data, uint64_t modifier)
++{
++    /* Non-key-derived index; collisions require a complete tag comparison. */
++    uint64_t mixed = (data >> 2) ^ (data >> 32) ^
++                     (modifier >> 4) ^ (modifier >> 36);
++
++    return mixed & (ARM_PAUTH_MEMO_ENTRIES - 1);
++}
++
+ static uint64_t pauth_computepac(CPUARMState *env, uint64_t data,
+                                  uint64_t modifier, ARMPACKey key)
+ {
+-    if (cpu_isar_feature(aa64_pauth_qarma5, env_archcpu(env))) {
+-        return pauth_computepac_architected(data, modifier, key, false);
+-    } else if (cpu_isar_feature(aa64_pauth_qarma3, env_archcpu(env))) {
+-        return pauth_computepac_architected(data, modifier, key, true);
++    ARMCPU *cpu = env_archcpu(env);
++    ARMPAuthMemoEntry *entry = NULL;
++    unsigned algorithm;
++    uint64_t result;
++
++    if (cpu_isar_feature(aa64_pauth_qarma5, cpu)) {
++        algorithm = 5;
++    } else if (cpu_isar_feature(aa64_pauth_qarma3, cpu)) {
++        algorithm = 3;
+     } else {
++        /* The inexpensive implementation-defined algorithm stays uncached. */
+         return pauth_computepac_impdef(data, modifier, key);
+     }
++
++    if (cpu->prop_pauth_memo) {
++        entry = &env->pauth_memo[pauth_memo_slot(data, modifier)];
++        if (entry->valid && entry->data == data &&
++            entry->modifier == modifier && entry->key.lo == key.lo &&
++            entry->key.hi == key.hi && entry->algorithm == algorithm) {
++            return entry->result;
++        }
++    }
++
++    result = pauth_computepac_architected(data, modifier, key, algorithm == 3);
++    if (entry) {
++        *entry = (ARMPAuthMemoEntry) {
++            .data = data, .modifier = modifier, .key = key, .result = result,
++            .algorithm = algorithm, .valid = true,
++        };
++    }
++    return result;
+ }
+ 
+ static uint64_t pauth_addpac(CPUARMState *env, uint64_t ptr, uint64_t modifier,

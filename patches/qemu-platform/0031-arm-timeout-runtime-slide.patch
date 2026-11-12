@@ -1,0 +1,229 @@
+diff --git a/target/arm/timeout-diagnostic.c b/target/arm/timeout-diagnostic.c
+--- a/target/arm/timeout-diagnostic.c
++++ b/target/arm/timeout-diagnostic.c
+@@ -32,10 +32,10 @@
+     uint8_t uuid[16];
+     ARMTimeoutSite sites[ARM_TIMEOUT_DIAG_SITES];
+     /* Published only with all vCPUs stopped; reset/post-load revoke it. */
+-    uint64_t base;
++    bool armed;
+     uint64_t epoch;
+     uint64_t hits[ARM_TIMEOUT_DIAG_SITES];
+-    uint64_t failures;
++    uint64_t rejections;
+     uint32_t status;
+     Error *migration_blocker;
+ };
+@@ -43,6 +43,7 @@
+ enum {
+     DIAG_UNARMED, DIAG_ARMED, DIAG_SITE0, DIAG_SITE1,
+     DIAG_UNREADABLE, DIAG_IDENTITY_MISMATCH, DIAG_CONTEXT_CHANGED,
++    DIAG_INVALID_CANDIDATE,
+ };
+ 
+ static bool diag_uint(QDict *dict, const char *name, uint64_t *value)
+@@ -176,33 +177,32 @@
+ {
+     ARMTimeoutDiagnostic *d = cpu->webkit_timeout_diagnostic;
+     if (d) {
+-        qatomic_set(&d->base, 0);
++        qatomic_set(&d->armed, false);
+         qatomic_set(&d->status, DIAG_UNARMED);
+         qatomic_set(&d->epoch, qatomic_read(&d->epoch) + 1);
+-        qatomic_set(&d->failures, 0);
++        qatomic_set(&d->rejections, 0);
+         for (unsigned i = 0; i < ARM_TIMEOUT_DIAG_SITES; i++) {
+             qatomic_set(&d->hits[i], 0);
+         }
+     }
+ }
+ 
+-static void diag_set_base(Object *obj, Visitor *v, const char *name,
+-                          void *opaque, Error **errp)
++static void diag_set_armed(Object *obj, Visitor *v, const char *name,
++                           void *opaque, Error **errp)
+ {
+     ARMTimeoutDiagnostic *d = ARM_CPU(obj)->webkit_timeout_diagnostic;
+-    uint64_t base;
+-
+-    if (!visit_type_uint64(v, name, &base, errp)) {
++    bool armed;
++
++    if (!visit_type_bool(v, name, &armed, errp)) {
+         return;
+     }
+     if (!d || runstate_is_running() ||
+-        !(runstate_check(RUN_STATE_PAUSED) || runstate_check(RUN_STATE_PRELAUNCH)) ||
+-        (base && ((base & 4095) || base > UINT64_MAX - d->image_size))) {
+-        error_setg(errp, "Timeout diagnostic base requires enabled profile and paused VM");
++        !(runstate_check(RUN_STATE_PAUSED) || runstate_check(RUN_STATE_PRELAUNCH))) {
++        error_setg(errp, "Timeout diagnostic arming requires enabled profile and paused VM");
+         return;
+     }
+-    qatomic_set(&d->base, base);
+-    qatomic_set(&d->status, base ? DIAG_ARMED : DIAG_UNARMED);
++    qatomic_set(&d->armed, armed);
++    qatomic_set(&d->status, armed ? DIAG_ARMED : DIAG_UNARMED);
+     qatomic_set(&d->epoch, qatomic_read(&d->epoch) + 1);
+ }
+ 
+@@ -210,7 +210,7 @@
+                            void *opaque, Error **errp)
+ {
+     ARMTimeoutDiagnostic *d = ARM_CPU(obj)->webkit_timeout_diagnostic;
+-    bool armed = d && qatomic_read(&d->base);
++    bool armed = d && qatomic_read(&d->armed);
+     visit_type_bool(v, name, &armed, errp);
+ }
+ 
+@@ -222,7 +222,7 @@
+     uint64_t value = 0;
+     if (d) {
+         value = which < 2 ? qatomic_read(&d->hits[which]) :
+-                which == 2 ? qatomic_read(&d->failures) : qatomic_read(&d->epoch);
++                which == 2 ? qatomic_read(&d->rejections) : qatomic_read(&d->epoch);
+     }
+     visit_type_uint64(v, name, &value, errp);
+ }
+@@ -232,23 +232,22 @@
+     ARMTimeoutDiagnostic *d = ARM_CPU(obj)->webkit_timeout_diagnostic;
+     static const char *const names[] = {
+         "unarmed", "armed-unverified", "site0-verified", "site1-verified",
+-        "unreadable-or-unsupported", "identity-mismatch", "context-changed",
++        "candidate-unreadable-or-unsupported", "candidate-identity-mismatch",
++        "candidate-context-changed", "candidate-invalid-range",
+     };
+     return g_strdup(d ? names[qatomic_read(&d->status)] : "off");
+ }
+ 
+ void arm_timeout_diag_properties(Object *obj)
+ {
+-    object_property_add(obj, "x-webkit-timeout-base", "uint64", NULL,
+-                         diag_set_base, NULL, NULL);
+     object_property_add(obj, "x-webkit-timeout-armed", "bool", diag_get_armed,
+-                         NULL, NULL, NULL);
++                         diag_set_armed, NULL, NULL);
+     object_property_add_str(obj, "x-webkit-timeout-status", diag_get_status, NULL);
+     object_property_add(obj, "x-webkit-timeout-site0-hits", "uint64",
+                          diag_get_count, NULL, NULL, (void *)0);
+     object_property_add(obj, "x-webkit-timeout-site1-hits", "uint64",
+                          diag_get_count, NULL, NULL, (void *)1);
+-    object_property_add(obj, "x-webkit-timeout-failures", "uint64",
++    object_property_add(obj, "x-webkit-timeout-rejections", "uint64",
+                          diag_get_count, NULL, NULL, (void *)2);
+     object_property_add(obj, "x-webkit-timeout-epoch", "uint64",
+                          diag_get_count, NULL, NULL, (void *)3);
+@@ -287,51 +286,69 @@
+ uint64_t arm_timeout_diag_value(CPUARMState *env, uint64_t pc, uint32_t insn)
+ {
+     ARMTimeoutDiagnostic *d = env_archcpu(env)->webkit_timeout_diagnostic;
+-    uint8_t identity[24], header[8], context[ARM_TIMEOUT_DIAG_WINDOW];
+-    ARMDiagContext before, after;
+-    unsigned site;
+-    uint32_t failure = DIAG_UNREADABLE;
+-    uint64_t base;
+-
+-    if (!d || !(base = qatomic_read(&d->base))) {
++
++    if (!d || !qatomic_read(&d->armed)) {
+         return ARM_TIMEOUT_DIAG_ORIGINAL;
+     }
+-    for (site = 0; site < ARM_TIMEOUT_DIAG_SITES; site++) {
+-        if (pc == base + d->sites[site].offset &&
+-            insn == d->sites[site].instruction) {
+-            break;
+-        }
+-    }
+-    if (site == ARM_TIMEOUT_DIAG_SITES) {
+-        return ARM_TIMEOUT_DIAG_ORIGINAL;
+-    }
+-    before = diag_context(env);
+-    for (unsigned pass = 0; pass < 2; pass++) {
+-        if (!arm_cpu_read_diag_ram(env, base, header, sizeof(header)) ||
+-            !arm_cpu_read_diag_ram(env, base + d->uuid_offset - 8,
+-                                   identity, sizeof(identity)) ||
+-            !arm_cpu_read_diag_ram(env, base + d->sites[site].context_offset,
+-                                   context, sizeof(context))) {
+-            goto fail;
+-        }
+-        if (ldl_le_p(header) != 0xfeedfacf || ldl_le_p(header + 4) != 0x0100000c ||
+-            ldl_le_p(identity) != 0x1b || ldl_le_p(identity + 4) != 24 ||
+-            memcmp(identity + 8, d->uuid, sizeof(d->uuid)) ||
+-            memcmp(context, d->sites[site].context, sizeof(context))) {
+-            failure = DIAG_IDENTITY_MISMATCH;
+-            goto fail;
+-        }
+-    }
+-    after = diag_context(env);
+-    if (memcmp(&before, &after, sizeof(before))) {
+-        failure = DIAG_CONTEXT_CHANGED;
+-        goto fail;
+-    }
+-    qatomic_set(&d->hits[site], qatomic_read(&d->hits[site]) + 1);
+-    qatomic_set(&d->status, site ? DIAG_SITE1 : DIAG_SITE0);
+-    return ARM_TIMEOUT_DIAG_VALUE;
+-fail:
+-    qatomic_set(&d->failures, qatomic_read(&d->failures) + 1);
+-    qatomic_set(&d->status, failure);
++    for (unsigned site = 0; site < ARM_TIMEOUT_DIAG_SITES; site++) {
++        uint8_t identity[24], header[8], context[ARM_TIMEOUT_DIAG_WINDOW];
++        ARMDiagContext before, after;
++        uint32_t rejection = DIAG_UNREADABLE;
++        uint64_t base;
++
++        if (insn != d->sites[site].instruction ||
++            (pc & 4095) != (d->sites[site].offset & 4095)) {
++            continue;
++        }
++        /* A shared image can have a different slide in each address space.
++         * CF_PCREL can also reuse this TB at another VA: use the actual PC,
++         * never the translating PC or another process's observed image base.
++         * This diagnostic is scoped to untagged, lower-48-bit user images.
++         * Reject arithmetic/range failures before any page-table read.
++         */
++        if (pc < d->sites[site].offset) {
++            rejection = DIAG_INVALID_CANDIDATE;
++            goto reject;
++        }
++        base = pc - d->sites[site].offset;
++        if (!base || (base & 4095) ||
++            base > (UINT64_C(1) << 48) - d->image_size) {
++            rejection = DIAG_INVALID_CANDIDATE;
++            goto reject;
++        }
++        before = diag_context(env);
++        for (unsigned pass = 0; pass < 2; pass++) {
++            if (!arm_cpu_read_diag_ram(env, base, header, sizeof(header)) ||
++                !arm_cpu_read_diag_ram(env, base + d->uuid_offset - 8,
++                                       identity, sizeof(identity)) ||
++                !arm_cpu_read_diag_ram(env,
++                                       base + d->sites[site].context_offset,
++                                       context, sizeof(context))) {
++                goto reject;
++            }
++            if (ldl_le_p(header) != 0xfeedfacf ||
++                ldl_le_p(header + 4) != 0x0100000c ||
++                ldl_le_p(identity) != 0x1b || ldl_le_p(identity + 4) != 24 ||
++                memcmp(identity + 8, d->uuid, sizeof(d->uuid)) ||
++                memcmp(context, d->sites[site].context, sizeof(context))) {
++                rejection = DIAG_IDENTITY_MISMATCH;
++                goto reject;
++            }
++        }
++        after = diag_context(env);
++        if (memcmp(&before, &after, sizeof(before))) {
++            rejection = DIAG_CONTEXT_CHANGED;
++            goto reject;
++        }
++        qatomic_set(&d->hits[site], qatomic_read(&d->hits[site]) + 1);
++        qatomic_set(&d->status, site ? DIAG_SITE1 : DIAG_SITE0);
++        return ARM_TIMEOUT_DIAG_VALUE;
++reject:
++        /* Other images at eligible FMOV PCs are expected candidates too.
++         * A rejection is not a guest exception or an application error.
++         */
++        qatomic_set(&d->rejections, qatomic_read(&d->rejections) + 1);
++        qatomic_set(&d->status, rejection);
++    }
+     return ARM_TIMEOUT_DIAG_ORIGINAL;
+ }

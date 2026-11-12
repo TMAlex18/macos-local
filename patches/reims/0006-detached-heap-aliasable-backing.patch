@@ -1,0 +1,165 @@
+From: macos-local research
+Subject: [PATCH] Give detached-heap temporary backing shareable host pages
+
+Core creates a heap over temporary zero-filled storage before detaching it.
+Linux address reservations are anonymous and cannot be remapped through the
+file-backed alias table. Request shareable storage only for this backing;
+keep ordinary reservations and remap failure semantics unchanged.
+
+diff --git a/crates/reims-vgpu-core/src/platform/os/vm.rs b/crates/reims-vgpu-core/src/platform/os/vm.rs
+index 7e35e95..d47fbe0 100644
+--- a/crates/reims-vgpu-core/src/platform/os/vm.rs
++++ b/crates/reims-vgpu-core/src/platform/os/vm.rs
+@@ -63,6 +63,13 @@ pub trait HostVm: Send + Sync {
+     fn page_shift(&self) -> u32;
+     /// `mach_vm_allocate(task, &a, len, VM_FLAGS_ANYWHERE)`: a fresh zero-filled range.
+     fn allocate_anywhere(&self, len: u64) -> Result<HostAddr, KernReturn>;
++    /// Fresh zero-filled backing whose pages can be shared by `remap_shared_overwrite`.
++    /// Mach allocations already have this property. Platforms that distinguish address
++    /// reservations from shareable storage must provide the latter here. Released with
++    /// `deallocate`, like `allocate_anywhere`.
++    fn allocate_aliasable(&self, len: u64) -> Result<HostAddr, KernReturn> {
++        self.allocate_anywhere(len)
++    }
+     /// `mach_vm_allocate(task, &addr, len, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE)`: replaces
+     /// `addr..addr+len` with zero fill.
+     fn allocate_fixed_overwrite(&self, addr: HostAddr, len: u64) -> Result<(), KernReturn>;
+diff --git a/crates/reims-vgpu-core/src/resources/heap/detach.rs b/crates/reims-vgpu-core/src/resources/heap/detach.rs
+index 2b9706f..dcb6dcd 100644
+--- a/crates/reims-vgpu-core/src/resources/heap/detach.rs
++++ b/crates/reims-vgpu-core/src/resources/heap/detach.rs
+@@ -82,7 +82,9 @@ impl<P: Platform> DetachHeapResource<P> {
+             options.push(OptionSet::ResourceOptionsOr(RESOURCE_OPTION_READ_ONLY));
+         }
+         // A failure allocates nothing, so nothing is freed.
+-        let dummy = match p.vm().allocate_anywhere(length) {
++        // The heap aliases these pages before detaching; an address reservation alone is
++        // insufficient on hosts whose shared aliases require file-backed storage.
++        let dummy = match p.vm().allocate_aliasable(length) {
+             Ok(a) => a,
+             Err(error) => {
+                 log::error!(
+diff --git a/crates/reims-vgpu-vulkan/src/os/linux/vm.rs b/crates/reims-vgpu-vulkan/src/os/linux/vm.rs
+index 56732a7..16c992c 100644
+--- a/crates/reims-vgpu-vulkan/src/os/linux/vm.rs
++++ b/crates/reims-vgpu-vulkan/src/os/linux/vm.rs
+@@ -12,6 +12,9 @@
+ //!   file, so no view can be made of it: it serves core's reservations, its detach temporaries
+ //!   and the address space views are mapped over. A range a view must be made of comes from
+ //!   [`allocate_aliasable`], a shared mapping of a file of its own.
++//! - **`allocate_aliasable`** supplies that storage for core's temporary detached-heap
++//!   backing: the heap first aliases the pages, then detaches and replaces them with the
++//!   guest's pages. An anonymous reservation cannot serve as the first alias's source.
+ //! - **`remap_shared_overwrite`** fails with `KERN_INVALID_ADDRESS` where a byte of the source
+ //!   has no file behind it, as Mach fails for an unmapped source, before it maps anything. A
+ //!   piece the kernel refuses fails the call with nothing changed, as Mach's remap is all or
+@@ -196,7 +199,7 @@ pub(super) fn file(
+ /// A fresh range of `len` bytes, rounded up to whole pages, of zeros, that a view can be made of:
+ /// a shared mapping of a file of its own, recorded in the backing table. Freed by `deallocate`,
+ /// as any other range. The block of zeros a detached object reads, and the tests' stand-in for
+-/// guest memory, are such ranges.
++/// guest memory, and core's temporary detached-heap backing, are such ranges.
+ pub(crate) fn allocate_aliasable(len: u64) -> Result<HostAddr, KernReturn> {
+     let Some((_, length)) = pages(HostAddr::NULL, len) else {
+         return Err(NO_SPACE);
+@@ -462,6 +465,10 @@ impl HostVm for LinuxVm {
+         Ok(HostAddr::from_addr(at.to_usize()))
+     }
+ 
++    fn allocate_aliasable(&self, len: u64) -> Result<HostAddr, KernReturn> {
++        allocate_aliasable(len)
++    }
++
+     /// Fresh anonymous memory over the pages of the range, which then shows no file.
+     fn allocate_fixed_overwrite(&self, addr: HostAddr, len: u64) -> Result<(), KernReturn> {
+         let (first, length) = pages(addr, len).ok_or(NO_SPACE)?;
+@@ -578,6 +585,72 @@ pub(crate) mod tests {
+         unsafe { a.wrapping_add(off).as_ptr::<u8>().write_volatile(v) }
+     }
+ 
++    /// A temporary heap backing is shareable before its first detach. Its 20 MiB can also
++    /// be viewed in swapped 16 KiB guest-page order on a 4 KiB host; writes work both ways,
++    /// a view of the fragmented view keeps the pages after both older mappings go, and an
++    /// out-of-range remap changes neither the target's pages nor its backing-table entries.
++    #[test]
++    fn aliasable_heap_pages_survive_segmented_views_and_refused_ranges() {
++        let v = vm();
++        let length = 0x140_0000;
++        let guest_page = 0x4000;
++        assert_eq!(v.page_size(), 0x1000);
++        let source = HostVm::allocate_aliasable(&v, length).unwrap();
++        let view = v.allocate_anywhere(length).unwrap();
++        let retained = v.allocate_anywhere(length).unwrap();
++        for i in 0..length / guest_page {
++            let offset = i * guest_page;
++            assert_eq!(read(source, offset), 0);
++            write(source, offset, 0x31);
++            v.remap_shared_overwrite(
++                view.wrapping_add(offset),
++                source.wrapping_add((i ^ 1) * guest_page),
++                guest_page,
++            )
++            .unwrap();
++        }
++        v.remap_shared_overwrite(retained, view, length).unwrap();
++        for i in 0..length / guest_page {
++            let offset = i * guest_page;
++            assert_eq!(read(retained, offset), 0x31);
++            write(retained, offset + guest_page - 1, 0x72);
++            assert_eq!(read(source, (i ^ 1) * guest_page + guest_page - 1), 0x72);
++            write(source, (i ^ 1) * guest_page + 1, 0x53);
++            assert_eq!(read(view, offset + 1), 0x53);
++        }
++        assert_eq!(
++            v.remap_shared_overwrite(retained, source, u64::MAX),
++            Err(INVALID_ARGUMENT)
++        );
++        // Make a known hole inside the source, rather than assume a neighbour is unmapped.
++        assert!(
++            v.deallocate(source.wrapping_add(guest_page), guest_page)
++                .is_success()
++        );
++        assert_eq!(
++            v.remap_shared_overwrite(retained, source, length),
++            Err(INVALID_ADDRESS)
++        );
++        assert_eq!(read(retained, 0), 0x31);
++        assert_eq!(read(retained, 1), 0x53);
++        assert_eq!(read(retained, guest_page - 1), 0x72);
++        assert!(files::pieces(retained.addr().to_u64(), length).is_some());
++        assert!(v.deallocate(source, length).is_success());
++        assert!(v.deallocate(view, length).is_success());
++        for i in 0..length / guest_page {
++            let offset = i * guest_page;
++            assert_eq!(read(retained, offset + guest_page - 1), 0x72);
++            write(retained, offset, 0xa4);
++            assert_eq!(read(retained, offset), 0xa4);
++        }
++        assert!(v.deallocate(retained, length).is_success());
++        for at in [source, view, retained] {
++            assert!(files::pieces(at.addr().to_u64(), length).is_none());
++            assert!(!mapped(at));
++        }
++        assert_eq!(HostVm::allocate_aliasable(&v, 0), Ok(HostAddr::NULL));
++    }
++
+     /// The host's page, which the tests lay their pages out by: x86-64's 4 KiB.
+     pub(crate) const PAGE: u64 = 0x1000;
+ 
+diff --git a/crates/reims-vgpu-vulkan/src/remap.rs b/crates/reims-vgpu-vulkan/src/remap.rs
+index 5b5197d..fcfcc20 100644
+--- a/crates/reims-vgpu-vulkan/src/remap.rs
++++ b/crates/reims-vgpu-vulkan/src/remap.rs
+@@ -357,6 +357,12 @@ impl HostVm for VulkanVm {
+         Ok(at)
+     }
+ 
++    fn allocate_aliasable(&self, len: u64) -> Result<HostAddr, KernReturn> {
++        let at = self.vm.allocate_aliasable(len)?;
++        self.changed(at, len);
++        Ok(at)
++    }
++
+     fn allocate_fixed_overwrite(&self, addr: HostAddr, len: u64) -> Result<(), KernReturn> {
+         self.vm.allocate_fixed_overwrite(addr, len)?;
+         let pages = self.changed(addr, len);

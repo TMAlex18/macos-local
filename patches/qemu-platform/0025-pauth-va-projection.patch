@@ -1,0 +1,122 @@
+From: macos-local research
+Subject: [PATCH] Project PAuth VA fields from the shared full translation rules
+
+Keep the full AArch64 VA implementation as one always-inline body. Retain
+its public full-result API for MMU users, and expose a PAuth-only projection
+of tsz/tbi/mtx for the three signing/authentication/strip consumers. No
+translation-control rule, cryptographic operation, clock or cache default
+changes. The compiler can discard unused MMU metadata calculations.
+The projection also omits the PIE/AIE-only HCRX query; the full MMU
+entry point keeps that calculation.
+
+The source-extracted pinned full helper, real QEMU headers and synthetic
+PAC consumers form the field/output oracle in E06-pauth-hvc/test-pac-va.py.
+
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -10079,9 +10079,15 @@
+     return Gran64K;
+ }
+ 
+-ARMVAParameters aa64_va_parameters(CPUARMState *env, uint64_t va,
+-                                   ARMMMUIdx mmu_idx, bool data,
+-                                   bool el1_is_aa32)
++/*
++ * Share all translation-control rules between the page-table walker and
++ * PAuth.  Inlining lets the PAuth projection below discard fields which it
++ * does not consume, without maintaining a second set of architectural rules.
++ */
++static inline QEMU_ALWAYS_INLINE
++ARMVAParameters aa64_va_parameters_impl(CPUARMState *env, uint64_t va,
++                                        ARMMMUIdx mmu_idx, bool data,
++                                        bool el1_is_aa32, bool pauth_only)
+ {
+     uint64_t tcr = regime_tcr(env, mmu_idx);
+     bool epd, hpd, tsz_oob, ds, ha, hd, pie = false;
+@@ -10158,7 +10164,9 @@
+             epd = true;
+         }
+ 
+-        if ((!arm_feature(env, ARM_FEATURE_EL3)
++        /* PAuth does not consume permission/attribute indirection metadata. */
++        if (!pauth_only
++            && (!arm_feature(env, ARM_FEATURE_EL3)
+              || (env->cp15.scr_el3 & SCR_TCR2EN))
+             && (r_el == 2 || (arm_hcrx_el2_eff(env) & HCRX_TCR2EN))) {
+             pie = env->cp15.tcr2_el[r_el] & TCR2_PIE;
+@@ -10250,6 +10258,26 @@
+     };
+ }
+ 
++ARMVAParameters aa64_va_parameters(CPUARMState *env, uint64_t va,
++                                   ARMMMUIdx mmu_idx, bool data,
++                                   bool el1_is_aa32)
++{
++    return aa64_va_parameters_impl(env, va, mmu_idx, data, el1_is_aa32, false);
++}
++
++ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
++                                         ARMMMUIdx mmu_idx, bool data)
++{
++    ARMVAParameters full = aa64_va_parameters_impl(env, va, mmu_idx,
++                                                  data, false, true);
++
++    return (ARMVAParameters) {
++        .tsz = full.tsz,
++        .tbi = full.tbi,
++        .mtx = full.mtx,
++    };
++}
++
+ 
+ /*
+  * Return the exception level to which FP-disabled exceptions should
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1462,6 +1462,14 @@
+ ARMVAParameters aa64_va_parameters(CPUARMState *env, uint64_t va,
+                                    ARMMMUIdx mmu_idx, bool data,
+                                    bool el1_is_aa32);
++
++/*
++ * PAuth-only projection of aa64_va_parameters(..., el1_is_aa32=false).
++ * Only tsz, tbi and mtx are populated; all other fields are zero.  Granule
++ * sanitization and address-size clamping still follow the shared full rules.
++ */
++ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
++                                         ARMMMUIdx mmu_idx, bool data);
+ 
+ int aa64_va_parameter_mtx(uint64_t tcr, ARMMMUIdx mmu_idx);
+ int aa64_va_parameter_tbi(uint64_t tcr, ARMMMUIdx mmu_idx);
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -302,7 +302,7 @@
+ {
+     ARMCPU *cpu = env_archcpu(env);
+     ARMMMUIdx mmu_idx = arm_stage1_mmu_idx(env);
+-    ARMVAParameters param = aa64_va_parameters(env, ptr, mmu_idx, data, false);
++    ARMVAParameters param = aa64_pauth_va_parameters(env, ptr, mmu_idx, data);
+     ARMPauthFeature pauth_feature = cpu_isar_feature(pauth_feature, cpu);
+     uint64_t pac, ext_ptr, ext, test;
+     int bot_bit, top_bit;
+@@ -396,7 +396,7 @@
+ {
+     ARMCPU *cpu = env_archcpu(env);
+     ARMMMUIdx mmu_idx = arm_stage1_mmu_idx(env);
+-    ARMVAParameters param = aa64_va_parameters(env, ptr, mmu_idx, data, false);
++    ARMVAParameters param = aa64_pauth_va_parameters(env, ptr, mmu_idx, data);
+     ARMPauthFeature pauth_feature = cpu_isar_feature(pauth_feature, cpu);
+     int bot_bit, top_bit;
+     uint64_t pac, orig_ptr, cmp_mask;
+@@ -439,7 +439,7 @@
+ static uint64_t pauth_strip(CPUARMState *env, uint64_t ptr, bool data)
+ {
+     ARMMMUIdx mmu_idx = arm_stage1_mmu_idx(env);
+-    ARMVAParameters param = aa64_va_parameters(env, ptr, mmu_idx, data, false);
++    ARMVAParameters param = aa64_pauth_va_parameters(env, ptr, mmu_idx, data);
+ 
+     return pauth_original_ptr(ptr, param);
+ }

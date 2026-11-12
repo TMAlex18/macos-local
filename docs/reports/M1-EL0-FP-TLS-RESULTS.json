@@ -1,0 +1,78 @@
+{
+  "reported_at": "2026-10-16T12:27:08.959759+00:00",
+  "research": "E06 EL0 MMU/ASID/PAuth IRQ context switching with FP/SIMD Q8,Q9 / FPCR / FPSR / TPIDR_EL0",
+  "platform": "Linux x86_64 QEMU TCG ARM64, self-authored firmware",
+  "original_el0_context_baseline_unchanged": true,
+  "new_experiment": "experiments/E06-el0-fp-tls",
+  "base_matrix": {
+    "raw_result": "runs/e06-el0-fp-tls/20261016T122506.946117Z/results.json",
+    "cases": 32,
+    "passed": true,
+    "positive": 4,
+    "expected_guest_negative": 28,
+    "profile_count": 4,
+    "rounds_per_task": 12,
+    "case_names": [
+      "data-executable",
+      "positive",
+      "ppi-disabled",
+      "skip-fp",
+      "skip-fpcr",
+      "skip-fpsr",
+      "skip-tls",
+      "wrong-key"
+    ],
+    "profiles": [
+      "clock-exact",
+      "headless",
+      "reims",
+      "reims-model"
+    ],
+    "clock_exact": {
+      "profile": "clock-exact",
+      "guest_CNTFRQ_HZ": 24000000,
+      "flag": "max,pauth-qarma5=on,cntfrq=24000000,x-cntfrq-exact=on",
+      "guest_readback_checked": true
+    }
+  },
+  "extended": {
+    "raw_result": "runs/e06-el0-fp-tls/20261016T122536.759642Z/results.json",
+    "cases": 4,
+    "passed": true,
+    "rounds_per_task": 64,
+    "total_guest_irq_events": 512,
+    "total_guest_context_switches": 516,
+    "all_positive_uart": true,
+    "clock_exact_guest_frequency_verified": true
+  },
+  "passed": true,
+  "checks": [
+    "real EL0 q8/q9 vector content comparison on each user iteration",
+    "real EL0 read of TPIDR_EL0/FPCR/FPSR across distinct task contexts",
+    "EL1 explicitly saves and restores chosen SIMD/TLS/FPCR/FPSR state",
+    "MMU same VA distinct ASIDs/physical pages, no broad TLB flush per switch",
+    "IRQ/SVC/permission faults and real PACIA/BLRAA/PACIASP/AUTIASP still exercised",
+    "negative tests deliberately skip FP, FPCR, FPSR, or TLS restore and detect corruption",
+    "PAuth wrong-key, executable-data and disabled-PPI negative baselines retained",
+    "clock-exact branch runs actual guest CNTFRQ=24000000 with opt-in exact counter/deadline, while other profiles explicitly read 1GHz"
+  ],
+  "source_hashes": {
+    "experiments/E06-el0-fp-tls/README.md": "8f9362cd2fb247e7269ac001514ee5fb722a81340297ba02cb7c83ba21e218b2",
+    "experiments/E06-el0-fp-tls/context.c": "affd29632065c7d793b247e4fcb09c573022a006246f8f79d4f477c953c93768",
+    "experiments/E06-el0-fp-tls/link.ld": "e2d17bf91e709953b955bbf138840ac03f476b7a82d6821cbc22d84509bccae3",
+    "experiments/E06-el0-fp-tls/run.py": "c0986e39ffd3ee520b93e161d2ab93a26623aa98d5aa7ec2d451935441066cd1",
+    "experiments/E06-el0-fp-tls/simd_regs.S": "f58c12afe72b0fbd949c428c04b1501fa619b3556d8095a700a3a48aa2f89c2a",
+    "experiments/E06-el0-fp-tls/user.S": "96158d66f230c87f345dadd9c3789e730c146ba2edbcbb0661be820292865b93"
+  },
+  "limitations": [
+    "Selected Q8/Q9 only; not Q0..Q31, FPMR, SVE/SME or FP trap-and-lazy restore.",
+    "One vCPU runs two EL0 integer tasks, not multi-vCPU scheduler.",
+    "Three QEMU profiles share substantial source code; not three independent implementations.",
+    "No Apple binaries or live guest macOS/WindowServer; test wall time is not performance benchmark.",
+    "PAC HVC model uses research-only keys, not Apple hardware derivation."
+  ],
+  "repro": [
+    "make el0-fp-tls-tests",
+    "make el0-fp-tls-extended"
+  ]
+}
