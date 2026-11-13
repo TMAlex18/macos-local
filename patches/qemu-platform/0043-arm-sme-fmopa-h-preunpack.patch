@@ -1,0 +1,106 @@
+From: macos-local research
+Subject: [PATCH] Pre-unpack active row/column operands in SME FP16 outer product
+
+Avoid 2*N^2 redundant float16_unpack_canonical() calls inside do_fmopa_h()
+by pre-unpacking active column elements once per tile and active row
+elements once per row, and eliding exact zero-product additions onto
+finite normal or +0.0 accumulators.
+
+diff --git a/target/arm/tcg/sme_helper.c b/target/arm/tcg/sme_helper.c
+--- a/target/arm/tcg/sme_helper.c
++++ b/target/arm/tcg/sme_helper.c
+@@ -966,21 +966,91 @@
+                        uint16_t negx, int negf)
+ {
+     intptr_t row, col, oprsz = simd_maxsz(desc);
++    FloatParts64 m_parts[ARM_MAX_VQ * 8];
++    bool has_active_row = false, has_active_col = false;
++    bool all_m_zon = true;
++    bool rmode_not_rdn = (fpst->float_rounding_mode != float_round_down);
++
++    g_assert(oprsz <= ARM_MAX_VQ * 16);
++    g_assert(!(negf & float_muladd_negate_result));
++
++    for (row = 0; row < oprsz; row += 16) {
++        if (pn[H2(row >> 4)] & 0x5555) {
++            has_active_row = true;
++            break;
++        }
++    }
++    if (!has_active_row) {
++        return;
++    }
++
++    for (col = 0; col < oprsz; ) {
++        uint16_t pb = pm[H2(col >> 4)];
++        if (!(pb & 0x5555)) {
++            col += 16;
++            continue;
++        }
++        do {
++            if (pb & 1) {
++                uint16_t mv = *(uint16_t *)(vzm + H1_2(col));
++                FloatParts64 mp = float16_unpack_canonical(mv, fpst);
++                m_parts[col >> 1] = mp;
++                has_active_col = true;
++                if (unlikely(mp.cls != float_class_zero &&
++                             mp.cls != float_class_normal)) {
++                    all_m_zon = false;
++                }
++            }
++            col += 2;
++            pb >>= 2;
++        } while (col & 15);
++    }
++    if (!has_active_col) {
++        return;
++    }
+ 
+     for (row = 0; row < oprsz; ) {
+         uint16_t pa = pn[H2(row >> 4)];
++        if (!(pa & 0x5555)) {
++            row += 16;
++            continue;
++        }
+         do {
+             if (pa & 1) {
+                 void *vza_row = vza + tile_vslice_offset(row);
+-                uint16_t n = *(uint32_t *)(vzn + H1_2(row)) ^ negx;
++                uint16_t n = *(uint16_t *)(vzn + H1_2(row)) ^ negx;
++                FloatParts64 np = float16_unpack_canonical(n, fpst);
++                bool n_zero_fast = (np.cls == float_class_zero &&
++                                    all_m_zon && rmode_not_rdn);
++                bool n_norm_fast = (np.cls == float_class_normal &&
++                                    rmode_not_rdn);
+ 
+                 for (col = 0; col < oprsz; ) {
+                     uint16_t pb = pm[H2(col >> 4)];
++                    if (!(pb & 0x5555)) {
++                        col += 16;
++                        continue;
++                    }
+                     do {
+                         if (pb & 1) {
+                             uint16_t *a = vza_row + H1_2(col);
+-                            uint16_t *m = vzm + H1_2(col);
+-                            *a = float16_muladd(n, *m, *a, negf, fpst);
++                            uint16_t av = *a;
++                            const FloatParts64 *mp = &m_parts[col >> 1];
++
++                            if (n_zero_fast ||
++                                (n_norm_fast && mp->cls == float_class_zero)) {
++                                unsigned a_exp = (av >> 10) & 0x1f;
++                                if (likely(av == 0 ||
++                                           (a_exp > 0 && a_exp < 31))) {
++                                    col += 2;
++                                    pb >>= 2;
++                                    continue;
++                                }
++                            }
++                            FloatParts64 ap = float16_unpack_canonical(av, fpst);
++                            FloatParts64 pr = parts64_muladd(&np, mp, &ap,
++                                                             negf, fpst);
++                            *a = float16_round_pack_canonical(&pr, fpst);
+                         }
+                         col += 2;
+                         pb >>= 2;

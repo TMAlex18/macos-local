@@ -1,0 +1,176 @@
+diff --git a/hw/intc/arm_gicv3_cpuif.c b/hw/intc/arm_gicv3_cpuif.c
+index 67a0bba4b0..2a7e6b58c9 100644
+--- a/hw/intc/arm_gicv3_cpuif.c
++++ b/hw/intc/arm_gicv3_cpuif.c
+@@ -3189,11 +3189,13 @@ void gicv3_init_cpuif(GICv3State *s, Error **errp)
+                 define_arm_cp_regs(cpu, gicv3_cpuif_ich_apxr23_reginfo);
+             }
+         }
+-        if (tcg_enabled() || qtest_enabled()) {
++        if ((tcg_enabled() || qtest_enabled()) &&
++            (arm_feature(&cpu->env, ARM_FEATURE_EL2) ||
++             arm_feature(&cpu->env, ARM_FEATURE_EL3))) {
+             /*
+              * We can only trap EL changes with TCG. However the GIC interrupt
+-             * state only changes on EL changes involving EL2 or EL3, so for
+-             * the non-TCG case this is OK, as EL2 and EL3 can't exist.
++             * state only changes on EL changes involving EL2 or EL3, so when
++             * neither EL2 nor EL3 exists we do not need this hook.
+              */
+             arm_register_el_change_hook(cpu, gicv3_cpuif_el_change_hook, cs);
+         } else {
+diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
+index 05bbbc1215..32b19f0326 100644
+--- a/hw/vmapple/vmapple.c
++++ b/hw/vmapple/vmapple.c
+@@ -1055,7 +1055,7 @@ static void mach_vmapple_init(MachineState *machine)
+             acpu->board_hvc_reset = vmapple_pac_cpu_reset;
+             acpu->board_hvc_opaque = p;
+             acpu->board_hvc_lockless = true;
+-            arm_register_el_change_hook(acpu, vmapple_pac_apply, p);
++            arm_register_el_change_hook_lockless(acpu, vmapple_pac_apply, p);
+         }
+         object_unref(cpu);
+     }
+diff --git a/target/arm/cpregs-pmu.c b/target/arm/cpregs-pmu.c
+index 46df6597b1..d6d80e6346 100644
+--- a/target/arm/cpregs-pmu.c
++++ b/target/arm/cpregs-pmu.c
+@@ -614,11 +614,17 @@ void pmu_op_finish(CPUARMState *env)
+ 
+ void pmu_pre_el_change(ARMCPU *cpu, void *ignored)
+ {
++    if (!arm_pmu_el_change_active(&cpu->env)) {
++        return;
++    }
+     pmu_op_start(&cpu->env);
+ }
+ 
+ void pmu_post_el_change(ARMCPU *cpu, void *ignored)
+ {
++    if (!arm_pmu_el_change_active(&cpu->env)) {
++        return;
++    }
+     pmu_op_finish(&cpu->env);
+ }
+ 
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 4e8621bfd9..5802554dc6 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -189,6 +189,9 @@ void arm_register_pre_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook,
+ 
+     entry->hook = hook;
+     entry->opaque = opaque;
++    if (hook != &pmu_pre_el_change) {
++        cpu->pre_el_change_bql_hooks++;
++    }
+ 
+     QLIST_INSERT_HEAD(&cpu->pre_el_change_hooks, entry, node);
+ }
+@@ -198,6 +201,20 @@ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook,
+ {
+     ARMELChangeHook *entry = g_new0(ARMELChangeHook, 1);
+ 
++    entry->hook = hook;
++    entry->opaque = opaque;
++    if (hook != &pmu_post_el_change) {
++        cpu->el_change_bql_hooks++;
++    }
++
++    QLIST_INSERT_HEAD(&cpu->el_change_hooks, entry, node);
++}
++
++void arm_register_el_change_hook_lockless(ARMCPU *cpu, ARMELChangeHookFn *hook,
++                                          void *opaque)
++{
++    ARMELChangeHook *entry = g_new0(ARMELChangeHook, 1);
++
+     entry->hook = hook;
+     entry->opaque = opaque;
+ 
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index 88d755e904..94dfd7d4c4 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1082,6 +1082,8 @@ struct ArchCPU {
+     void (*board_hvc_reset)(ARMCPU *cpu, void *opaque);
+     void *board_hvc_opaque;
+     bool board_hvc_lockless;
++    uint32_t pre_el_change_bql_hooks;
++    uint32_t el_change_bql_hooks;
+ 
+ 
+     /* For v8M, initial value of the Secure VTOR */
+@@ -2759,6 +2761,8 @@ void arm_register_pre_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook,
+  */
+ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
+         *opaque);
++void arm_register_el_change_hook_lockless(ARMCPU *cpu, ARMELChangeHookFn *hook,
++                                          void *opaque);
+ 
+ /**
+  * arm_rebuild_hflags:
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+index e248e34cff..3e79e08ff3 100644
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1767,6 +1767,12 @@ enum MVEECIState {
+ #define PMCRC   0x4
+ #define PMCRP   0x2
+ #define PMCRE   0x1
++
++static inline bool arm_pmu_el_change_active(CPUARMState *env)
++{
++    return arm_feature(env, ARM_FEATURE_EL2) ||
++           ((env->cp15.c9_pmcr & PMCRE) && env->cp15.c9_pmcnten != 0);
++}
+ /*
+  * Mask of PMCR bits writable by guest (not including WO bits like C, P,
+  * which can be written as 1 to trigger behaviour but which stay RAZ).
+diff --git a/target/arm/tcg/helper-a64.c b/target/arm/tcg/helper-a64.c
+index c4a6b6f9d5..047a257741 100644
+--- a/target/arm/tcg/helper-a64.c
++++ b/target/arm/tcg/helper-a64.c
+@@ -694,10 +694,16 @@ void HELPER(exception_return)(CPUARMState *env, uint64_t new_pc)
+         goto illegal_return;
+     }
+ 
+-    bql_lock();
+-    cpu_sync_stat_inc(env_cpu(env), &env_cpu(env)->sync_stats_counters.bql_eret);
+-    arm_call_pre_el_change_hook(cpu);
+-    bql_unlock();
++    if (unlikely(cpu->pre_el_change_bql_hooks > 0 ||
++                 arm_pmu_el_change_active(env))) {
++        bql_lock();
++        cpu_sync_stat_inc(env_cpu(env),
++                          &env_cpu(env)->sync_stats_counters.bql_eret);
++        arm_call_pre_el_change_hook(cpu);
++        bql_unlock();
++    } else {
++        arm_call_pre_el_change_hook(cpu);
++    }
+ 
+     if (!return_to_aa64) {
+         env->aarch64 = false;
+@@ -762,10 +768,16 @@ void HELPER(exception_return)(CPUARMState *env, uint64_t new_pc)
+      */
+     aarch64_sve_change_el(env, cur_el, new_el, return_to_aa64);
+ 
+-    bql_lock();
+-    cpu_sync_stat_inc(env_cpu(env), &env_cpu(env)->sync_stats_counters.bql_eret);
+-    arm_call_el_change_hook(cpu);
+-    bql_unlock();
++    if (unlikely(cpu->el_change_bql_hooks > 0 ||
++                 arm_pmu_el_change_active(env))) {
++        bql_lock();
++        cpu_sync_stat_inc(env_cpu(env),
++                          &env_cpu(env)->sync_stats_counters.bql_eret);
++        arm_call_el_change_hook(cpu);
++        bql_unlock();
++    } else {
++        arm_call_el_change_hook(cpu);
++    }
+ 
+     if (unlikely(env->tlbi_deferred_pending)) {
+         env->tlbi_deferred_pending = 0;

@@ -1,0 +1,131 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index b3add9b117..9ed8712581 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -799,7 +799,25 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
+ #ifdef CONFIG_USER_ONLY
+     assert(!cpu_test_interrupt(cpu, ~0));
+ #else
+-    if (unlikely(cpu_test_interrupt(cpu, ~0))) {
++    int irq_req = qatomic_read(&cpu->interrupt_request);
++    if (unlikely(irq_req & CPU_INTERRUPT_EXITTB)) {
++        cpu_reset_interrupt(cpu, CPU_INTERRUPT_EXITTB);
++        *last_tb = NULL;
++        irq_req &= ~CPU_INTERRUPT_EXITTB;
++    }
++    if (unlikely(irq_req)) {
++        const TCGCPUOps *pre_ops = cpu->cc->tcg_ops;
++        if (replay_mode == REPLAY_MODE_NONE &&
++            !(irq_req & (CPU_INTERRUPT_DEBUG | CPU_INTERRUPT_HALT |
++                         CPU_INTERRUPT_RESET)) &&
++            !(cpu->singlestep_flags & SSTEP_NOIRQ) &&
++            pre_ops->cpu_has_unmasked_interrupt &&
++            !pre_ops->cpu_has_unmasked_interrupt(cpu, irq_req)) {
++            /* All pending architectural interrupts are currently masked. */
++            irq_req = 0;
++        }
++    }
++    if (unlikely(irq_req)) {
+         bql_lock();
+         cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_handle_interrupt);
+         if (cpu_test_interrupt(cpu, CPU_INTERRUPT_DEBUG)) {
+diff --git a/include/accel/tcg/cpu-ops.h b/include/accel/tcg/cpu-ops.h
+index 3ff6e6810e..35b6e662d2 100644
+--- a/include/accel/tcg/cpu-ops.h
++++ b/include/accel/tcg/cpu-ops.h
+@@ -173,6 +173,12 @@ struct TCGCPUOps {
+     void (*do_interrupt)(CPUState *cpu);
+     /** @cpu_exec_interrupt: Callback for processing interrupts in cpu_exec */
+     bool (*cpu_exec_interrupt)(CPUState *cpu, int interrupt_request);
++    /**
++     * @cpu_has_unmasked_interrupt: Optional lock-free pre-check for whether
++     * any pending architectural bit in @interrupt_request is currently
++     * unmasked in thread-local CPU state.
++     */
++    bool (*cpu_has_unmasked_interrupt)(CPUState *cpu, int interrupt_request);
+     /** @cpu_exec_reset: Callback for reset in cpu_exec.  */
+     void (*cpu_exec_reset)(CPUState *cpu);
+     /**
+diff --git a/target/arm/cpu-irq.c b/target/arm/cpu-irq.c
+index 883e8a176c..16cae68cf5 100644
+--- a/target/arm/cpu-irq.c
++++ b/target/arm/cpu-irq.c
+@@ -169,7 +169,9 @@ static inline bool arm_excp_unmasked(CPUState *cs, unsigned int excp_idx,
+     return unmasked || pstate_unmasked;
+ }
+ 
+-bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
++static bool arm_find_unmasked_interrupt(CPUState *cs, int interrupt_request,
++                                        uint32_t *excp_idx_out,
++                                        uint32_t *target_el_out)
+ {
+     CPUARMState *env = cpu_env(cs);
+     uint32_t cur_el = arm_current_el(env);
+@@ -259,15 +261,40 @@ bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+         target_el = 1;
+         if (arm_excp_unmasked(cs, excp_idx, target_el,
+                               cur_el, secure, hcr_el2)) {
+-            /* Taking a virtual abort clears HCR_EL2.VSE */
+-            env->cp15.hcr_el2 &= ~HCR_VSE;
+-            cpu_reset_interrupt(cs, CPU_INTERRUPT_VSERR);
+             goto found;
+         }
+     }
+     return false;
+ 
+  found:
++    *excp_idx_out = excp_idx;
++    *target_el_out = target_el;
++    return true;
++}
++
++bool arm_cpu_has_unmasked_interrupt(CPUState *cs, int interrupt_request)
++{
++    uint32_t excp_idx, target_el;
++
++    return arm_find_unmasked_interrupt(cs, interrupt_request,
++                                       &excp_idx, &target_el);
++}
++
++bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
++{
++    CPUARMState *env = cpu_env(cs);
++    uint32_t target_el;
++    uint32_t excp_idx;
++
++    if (!arm_find_unmasked_interrupt(cs, interrupt_request,
++                                     &excp_idx, &target_el)) {
++        return false;
++    }
++    if (excp_idx == EXCP_VSERR) {
++        /* Taking a virtual abort clears HCR_EL2.VSE */
++        env->cp15.hcr_el2 &= ~HCR_VSE;
++        cpu_reset_interrupt(cs, CPU_INTERRUPT_VSERR);
++    }
+     cs->exception_index = excp_idx;
+     env->exception.target_el = target_el;
+     cs->cc->tcg_ops->do_interrupt(cs);
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 1042b86ef6..f2cf5761cd 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -2916,6 +2916,7 @@ static const TCGCPUOps arm_tcg_ops = {
+     .tlb_fill_align = arm_cpu_tlb_fill_align,
+     .pointer_wrap = aprofile_pointer_wrap,
+     .cpu_exec_interrupt = arm_cpu_exec_interrupt,
++    .cpu_has_unmasked_interrupt = arm_cpu_has_unmasked_interrupt,
+     .cpu_exec_halt = arm_cpu_exec_halt,
+     .cpu_exec_reset = cpu_reset,
+     .do_interrupt = arm_cpu_do_interrupt,
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+index 4046adddfd..e248e34cff 100644
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1251,6 +1251,7 @@ static inline const char *aarch32_mode_name(uint32_t psr)
+  * arm_cpu_exec_interrupt(): Implementation of the cpu_exec_inrerrupt hook.
+  */
+ bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request);
++bool arm_cpu_has_unmasked_interrupt(CPUState *cs, int interrupt_request);
+ 
+ /**
+  * arm_cpu_update_virq: Update CPU_INTERRUPT_VIRQ bit in cs->interrupt_request

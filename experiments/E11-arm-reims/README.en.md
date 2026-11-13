@@ -974,35 +974,35 @@ passes without rerunning the render control. This control uses a software
 renderer, and establishes no macOS, physical GPU, Metal or performance result.
 The masked Chrome string `WebKit WebGL` is not evidence of Safari execution.
 
-Run128 completed the installed-OS consumer on the existing4a43 main binary,
-network CTRL512 and the guarded finite30s diagnostic. The
+Run128 completed the installed-OS consumer on the existing 4a43 main binary,
+network CTRL 512 and the guarded finite 30 s diagnostic. The
 actual macOS oracle
-passes both entire24576B outputs with zero byte differences and the same
+passes both entire 24576 B outputs with zero byte differences and the same
 independent expected hash above. Actual context creation/dimensions,
 shader/program status, GL error checks and PUTs pass. Native pixels show
-upperCMY/lowerRGB tiles. The API reports `Apple GPU`; this does not establish
+upper CMY / lower RGB tiles. The API reports `Apple GPU`; this does not establish
 physical GPU execution, scanout, FPS, latency or general WebGL/Metal coverage.
 
 The Safari analysis
-retains one Safari-owned GPU1124: first client UIrequest→DidInitialize3.781s,
-then the WebGL page connection create→DidInitialize13.716s. These gaps are
+retains one Safari-owned GPU 1124: first client UI request → DidInitialize 3.781 s,
+then the WebGL page connection create → DidInitialize 13.716 s. These gaps are
 not measured blocking intervals. There are zero GPU watchdog requests but
 two WebProcess unresponsive notifications. Final global site0 has one hit
-onCPU2, site1 has none and rejections are zero, with unchanged per-CPU epochs.
-No PID attribution or original Safari3s performance pass follows.
+on CPU2, site1 has none and rejections are zero, with unchanged per-CPU epochs.
+No PID attribution or original Safari 3 s performance pass follows.
 
 The two raw PUTs and JSON arrive during the ordinary watcher; its retained
-timeline is133s, despite the120s request. No optional late window, reload or
+timeline is 133 s, despite the 120 s request. No optional late window, reload or
 authored PCM warmup was used. This new shader workload is not a matched
 Run127 performance reproduction. The host transport index
-records seven targeted methods (URL3/legacy directory1/GET-PUT-render2/helper1)
+records seven targeted methods (URL 3 / legacy directory 1 / GET-PUT-render 2 / helper 1)
 and separate shell syntax; synthetic transfer patterns are not rendered
 outputs. Existing URLs remain unchanged; no global URL whitelist was added.
 
 Run128 application
-records guest-origin shutdown, QEMU/files exit0/reaped, no host quit and
-alias cleanup. Controller1 is the unavailable post-exit final capture;
-`errors=[]`, filesystem cleanliness is unproved and the5s wait was not attempted.
+records guest-origin shutdown, QEMU/files exit 0 / reaped, no host quit and
+alias cleanup. Controller 1 is the unavailable post-exit final capture;
+`errors=[]`, filesystem cleanliness is unproved and the 5 s wait was not attempted.
 No VM is active. The user has requested project maintenance after this run,
 with no Run129 or new feature experiments planned. Maintenance is next and
 has not yet been executed; the long-term goal is not marked complete or paused.

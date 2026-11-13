@@ -26,7 +26,7 @@ or one shared host thread ID for single. No timing score is inferred.
   CPU1 never flushes locally between repeated accesses to that address space.
   It reads/writes the new PA and CPU0 checks the other backing frame unchanged.
 - ASID 0x11 and 0x22 assign the same virtual address to different PAs. CPU1
-  switches while CPU0 keeps ASID0x11 active; writes in one space must not
+  switches while CPU0 keeps ASID 0x11 active; writes in one space must not
   alter the other. ASIDE1IS and BBM exercise ASID reuse.
 - CPU0 revokes write permission; CPU1 traps eight times. ESR/EC/FSC/WnR,
   FAR and exact faulting PC are validated. Denied writes must not modify RAM;
@@ -38,10 +38,10 @@ or one shared host thread ID for single. No timing score is inferred.
 ## Negative controls
 
 - wrong-map: leave PA_A installed when PA_B is required. The guest must report
-  REMOTE_TRANSLATION_WRONG and exit1. This avoids depending on unspecified
+  REMOTE_TRANSLATION_WRONG and exit 1. This avoids depending on unspecified
   TLB cache retention after omitted invalidation.
 - missing-ro: leave a writable PTE when a fault is required. The guest must
-  report MISSING_REMOTE_PERMISSION_FAULT and exit1.
+  report MISSING_REMOTE_PERMISSION_FAULT and exit 1.
 
 Host timeout, crash, missing expected marker, wrong thread topology or counter
 is always failure, never a successful negative test.

@@ -10,7 +10,7 @@ installed macOS, login and the native desktop were verified.
 ## Actual driver and CoreAudio integration
 
 `r105-ioreg-local.png` shows `AppleVirtIOSound` registered, matched and active,
-with a user client owned by `coreaudiod` PID283. `r105-coreaudio-local.png`
+with a user client owned by `coreaudiod` PID 283. `r105-coreaudio-local.png`
 shows **Apple Virtual Sound Device** as the default input, output and system
 output, with two input channels, two output channels and a 48 kHz sample rate.
 

@@ -59,7 +59,20 @@ sets=[
   'patches/qemu-platform/0029-pauth-memo-16384.patch',
   'patches/qemu-platform/0030-arm-timeout-diagnostic.patch',
   'patches/qemu-platform/0031-arm-timeout-runtime-slide.patch',
-  'patches/qemu-platform/0032-virtio-net-control-queue-size.patch'])]
+  'patches/qemu-platform/0032-virtio-net-control-queue-size.patch',
+  'patches/qemu-platform/0033-tcg-sync-source-counters.patch',
+  'patches/qemu-platform/0034-arm-gtimer-lockless-counter-read.patch',
+  'patches/qemu-platform/0035-tcg-arm-skip-masked-irq-and-exittb-bql.patch',
+  'patches/qemu-platform/0036-vmapple-pac-hvc-lockless-and-key-cache.patch',
+  'patches/qemu-platform/0037-tcg-no-bql-queued-tlbi-work.patch',
+  'patches/qemu-platform/0038-arm-tlbi-dsb-batch-sync.patch',
+  'patches/qemu-platform/0039-arm-el10-eret-bql-elision.patch',
+  'patches/qemu-platform/0040-tcg-tb-jmp-cache-pcrel-and-size.patch',
+  'patches/qemu-platform/0041-tcg-cputlb-16k-subpage-and-arm-el23-fastpath.patch',
+  'patches/qemu-platform/0042-arm-pauth-va-cache-and-simd-qarma5.patch',
+  'patches/qemu-platform/0043-arm-sme-fmopa-h-preunpack.patch',
+  'patches/qemu-platform/0044-tcg-host-tagged-tb-jmp-cache.patch',
+  'patches/qemu-platform/0045-arm-ttbr-selective-tlb-flush.patch'])]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--component',choices=[x[0] for x in sets])
 args=parser.parse_args()

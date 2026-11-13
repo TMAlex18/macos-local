@@ -1,0 +1,318 @@
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index e47a04e61a..5923a12e40 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -362,7 +362,7 @@ static void flush_all_helper(CPUState *src, run_on_cpu_func fn,
+ 
+     CPU_FOREACH(cpu) {
+         if (cpu != src) {
+-            async_run_on_cpu(cpu, fn, d);
++            async_run_on_cpu_no_bql(cpu, fn, d);
+         }
+     }
+ }
+@@ -429,7 +429,7 @@ void tlb_flush_by_mmuidx_all_cpus_synced(CPUState *src_cpu, MMUIdxMap idxmap)
+ 
+     flush_all_helper(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
+     cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_all);
+-    async_safe_run_on_cpu(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
++    async_safe_run_on_cpu_no_bql(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
+ }
+ 
+ void tlb_flush_all_cpus_synced(CPUState *src_cpu)
+@@ -633,8 +633,8 @@ void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+         flush_all_helper(src_cpu, tlb_flush_page_by_mmuidx_async_1,
+                          RUN_ON_CPU_TARGET_PTR(addr | idxmap));
+         cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_page);
+-        async_safe_run_on_cpu(src_cpu, tlb_flush_page_by_mmuidx_async_1,
+-                              RUN_ON_CPU_TARGET_PTR(addr | idxmap));
++        async_safe_run_on_cpu_no_bql(src_cpu, tlb_flush_page_by_mmuidx_async_1,
++                                     RUN_ON_CPU_TARGET_PTR(addr | idxmap));
+     } else {
+         CPUState *dst_cpu;
+         TLBFlushPageByMMUIdxData *d;
+@@ -645,8 +645,9 @@ void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+                 d = g_new(TLBFlushPageByMMUIdxData, 1);
+                 d->addr = addr;
+                 d->idxmap = idxmap;
+-                async_run_on_cpu(dst_cpu, tlb_flush_page_by_mmuidx_async_2,
+-                                 RUN_ON_CPU_HOST_PTR(d));
++                async_run_on_cpu_no_bql(dst_cpu,
++                                        tlb_flush_page_by_mmuidx_async_2,
++                                        RUN_ON_CPU_HOST_PTR(d));
+             }
+         }
+ 
+@@ -654,8 +655,8 @@ void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+         d->addr = addr;
+         d->idxmap = idxmap;
+         cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_page);
+-        async_safe_run_on_cpu(src_cpu, tlb_flush_page_by_mmuidx_async_2,
+-                              RUN_ON_CPU_HOST_PTR(d));
++        async_safe_run_on_cpu_no_bql(src_cpu, tlb_flush_page_by_mmuidx_async_2,
++                                     RUN_ON_CPU_HOST_PTR(d));
+     }
+ }
+ 
+@@ -837,15 +838,15 @@ void tlb_flush_range_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+     CPU_FOREACH(dst_cpu) {
+         if (dst_cpu != src_cpu) {
+             p = g_memdup(&d, sizeof(d));
+-            async_run_on_cpu(dst_cpu, tlb_flush_range_by_mmuidx_async_1,
+-                             RUN_ON_CPU_HOST_PTR(p));
++            async_run_on_cpu_no_bql(dst_cpu, tlb_flush_range_by_mmuidx_async_1,
++                                    RUN_ON_CPU_HOST_PTR(p));
+         }
+     }
+ 
+     p = g_memdup(&d, sizeof(d));
+     cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_range);
+-    async_safe_run_on_cpu(src_cpu, tlb_flush_range_by_mmuidx_async_1,
+-                          RUN_ON_CPU_HOST_PTR(p));
++    async_safe_run_on_cpu_no_bql(src_cpu, tlb_flush_range_by_mmuidx_async_1,
++                                 RUN_ON_CPU_HOST_PTR(p));
+ }
+ 
+ void tlb_flush_page_bits_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+diff --git a/accel/tcg/tcg-accel-ops-mttcg.c b/accel/tcg/tcg-accel-ops-mttcg.c
+index af49aecec2..df8c953eae 100644
+--- a/accel/tcg/tcg-accel-ops-mttcg.c
++++ b/accel/tcg/tcg-accel-ops-mttcg.c
+@@ -27,6 +27,7 @@
+ #include "exec/cpu-common.h"
+ #include "system/tcg.h"
+ #include "system/replay.h"
++#include "system/runstate.h"
+ #include "exec/icount.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/notify.h"
+@@ -51,10 +52,10 @@ static void mttcg_force_rcu(Notifier *notify, void *data)
+     CPUState *cpu = container_of(notify, MttcgForceRcuNotifier, notifier)->cpu;
+ 
+     /*
+-     * Called with rcu_registry_lock held, using async_run_on_cpu() ensures
+-     * that there are no deadlocks.
++     * Called with rcu_registry_lock held, using async_run_on_cpu_no_bql()
++     * ensures that there are no deadlocks or unnecessary BQL acquisitions.
+      */
+-    async_run_on_cpu(cpu, do_nothing, RUN_ON_CPU_NULL);
++    async_run_on_cpu_no_bql(cpu, do_nothing, RUN_ON_CPU_NULL);
+ }
+ 
+ /*
+@@ -93,7 +94,31 @@ static void *mttcg_cpu_thread_fn(void *arg)
+             int excp;
+ 
+             bql_unlock();
+-            excp = tcg_cpu_exec(cpu);
++            for (;;) {
++                excp = tcg_cpu_exec(cpu);
++                if (excp != EXCP_INTERRUPT) {
++                    break;
++                }
++                qatomic_set(&cpu->exit_request, false);
++                qatomic_set_mb(&cpu->thread_kicked, false);
++                if (qatomic_read(&cpu->stop) ||
++                    qatomic_read(&cpu->unplug) ||
++                    qatomic_read(&cpu->halted) ||
++                    !runstate_is_running()) {
++                    break;
++                }
++                if (!process_queued_cpu_work_no_bql(cpu)) {
++                    break;
++                }
++                if (qatomic_read(&cpu->stop) ||
++                    qatomic_read(&cpu->unplug) ||
++                    qatomic_read(&cpu->halted) ||
++                    !runstate_is_running()) {
++                    break;
++                }
++                cpu_sync_stat_inc(cpu,
++                    &cpu->sync_stats_counters.no_bql_exit_interrupt);
++            }
+             bql_lock();
+             if (unlikely(cpu->sync_stats)) {
+                 switch (excp) {
+diff --git a/cpu-common.c b/cpu-common.c
+index b6e195cc5c..5a7e5d0772 100644
+--- a/cpu-common.c
++++ b/cpu-common.c
+@@ -127,7 +127,7 @@ struct qemu_work_item {
+     QSIMPLEQ_ENTRY(qemu_work_item) node;
+     run_on_cpu_func func;
+     run_on_cpu_data data;
+-    bool free, exclusive, done;
++    bool free, exclusive, done, no_bql;
+ };
+ 
+ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+@@ -156,6 +156,7 @@ void do_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data,
+     wi.done = false;
+     wi.free = false;
+     wi.exclusive = false;
++    wi.no_bql = false;
+ 
+     queue_work_on_cpu(cpu, &wi);
+     while (!qatomic_load_acquire(&wi.done)) {
+@@ -178,6 +179,20 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
+     queue_work_on_cpu(cpu, wi);
+ }
+ 
++void async_run_on_cpu_no_bql(CPUState *cpu, run_on_cpu_func func,
++                             run_on_cpu_data data)
++{
++    struct qemu_work_item *wi;
++
++    wi = g_new0(struct qemu_work_item, 1);
++    wi->func = func;
++    wi->data = data;
++    wi->free = true;
++    wi->no_bql = true;
++
++    queue_work_on_cpu(cpu, wi);
++}
++
+ /* Wait for pending exclusive operations to complete.  The CPU list lock
+    must be held.  */
+ static inline void exclusive_idle(void)
+@@ -338,6 +353,21 @@ void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func,
+     queue_work_on_cpu(cpu, wi);
+ }
+ 
++void async_safe_run_on_cpu_no_bql(CPUState *cpu, run_on_cpu_func func,
++                                  run_on_cpu_data data)
++{
++    struct qemu_work_item *wi;
++
++    wi = g_new0(struct qemu_work_item, 1);
++    wi->func = func;
++    wi->data = data;
++    wi->free = true;
++    wi->exclusive = true;
++    wi->no_bql = true;
++
++    queue_work_on_cpu(cpu, wi);
++}
++
+ void free_queued_cpu_work(CPUState *cpu)
+ {
+     while (!QSIMPLEQ_EMPTY(&cpu->work_list)) {
+@@ -376,6 +406,7 @@ void process_queued_cpu_work(CPUState *cpu)
+             end_exclusive();
+             bql_lock();
+             cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_exclusive);
++            cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_exclusive_reacquire);
+         } else {
+             cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_ordinary);
+             wi->func(cpu, wi->data);
+@@ -391,6 +422,52 @@ void process_queued_cpu_work(CPUState *cpu)
+     qemu_cond_broadcast(&qemu_work_cond);
+ }
+ 
++bool process_queued_cpu_work_no_bql(CPUState *cpu)
++{
++    struct qemu_work_item *wi;
++    bool broadcast = false;
++    bool had_work = false;
++
++    qemu_mutex_lock(&cpu->work_mutex);
++    while (!QSIMPLEQ_EMPTY(&cpu->work_list)) {
++        wi = QSIMPLEQ_FIRST(&cpu->work_list);
++        if (!wi->no_bql) {
++            qemu_mutex_unlock(&cpu->work_mutex);
++            if (broadcast) {
++                qemu_cond_broadcast(&qemu_work_cond);
++            }
++            return false;
++        }
++        if (!had_work) {
++            had_work = true;
++            cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_batches);
++        }
++        QSIMPLEQ_REMOVE_HEAD(&cpu->work_list, node);
++        qemu_mutex_unlock(&cpu->work_mutex);
++        if (wi->exclusive) {
++            start_exclusive();
++            wi->func(cpu, wi->data);
++            end_exclusive();
++            cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_exclusive);
++        } else {
++            cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_ordinary);
++            wi->func(cpu, wi->data);
++        }
++        qemu_mutex_lock(&cpu->work_mutex);
++        if (wi->free) {
++            g_free(wi);
++        } else {
++            qatomic_store_release(&wi->done, true);
++            broadcast = true;
++        }
++    }
++    qemu_mutex_unlock(&cpu->work_mutex);
++    if (broadcast) {
++        qemu_cond_broadcast(&qemu_work_cond);
++    }
++    return true;
++}
++
+ /* Return true if PC matches an installed breakpoint.  */
+ bool cpu_breakpoint_test(CPUState *cpu, vaddr pc, int mask)
+ {
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index a79ce3d3ce..2a3d95a9c1 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -615,6 +615,8 @@ struct CPUState {
+         uint64_t excl_tlbi_range;
+         uint64_t excl_step_atomic;
+         uint64_t excl_tb_flush;
++        uint64_t bql_exclusive_reacquire;
++        uint64_t no_bql_exit_interrupt;
+     } sync_stats_counters;
+ 
+     /*
+@@ -984,6 +986,8 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+  * Schedules the function @func for execution on the vCPU @cpu asynchronously.
+  */
+ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
++void async_run_on_cpu_no_bql(CPUState *cpu, run_on_cpu_func func,
++                             run_on_cpu_data data);
+ 
+ /**
+  * async_safe_run_on_cpu:
+@@ -998,6 +1002,9 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
+  * BQL.
+  */
+ void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
++void async_safe_run_on_cpu_no_bql(CPUState *cpu, run_on_cpu_func func,
++                                  run_on_cpu_data data);
++bool process_queued_cpu_work_no_bql(CPUState *cpu);
+ 
+ /**
+  * cpu_in_exclusive_context()
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index f2cf5761cd..4e8621bfd9 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -1414,7 +1414,9 @@ static char *arm_get_sync_stats_json(Object *obj, Error **errp)
+         ",\"excl_tlbi_page\":%" PRIu64
+         ",\"excl_tlbi_range\":%" PRIu64
+         ",\"excl_step_atomic\":%" PRIu64
+-        ",\"excl_tb_flush\":%" PRIu64,
++        ",\"excl_tb_flush\":%" PRIu64
++        ",\"bql_exclusive_reacquire\":%" PRIu64
++        ",\"no_bql_exit_interrupt\":%" PRIu64,
+         RD_CNT(exit_interrupt),
+         RD_CNT(exit_hlt),
+         RD_CNT(exit_halted),
+@@ -1442,7 +1444,9 @@ static char *arm_get_sync_stats_json(Object *obj, Error **errp)
+         RD_CNT(excl_tlbi_page),
+         RD_CNT(excl_tlbi_range),
+         RD_CNT(excl_step_atomic),
+-        RD_CNT(excl_tb_flush)
++        RD_CNT(excl_tb_flush),
++        RD_CNT(bql_exclusive_reacquire),
++        RD_CNT(no_bql_exit_interrupt)
+     );
+     #undef RD_CNT
+ 

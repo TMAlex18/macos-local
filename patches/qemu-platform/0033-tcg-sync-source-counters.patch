@@ -1,0 +1,766 @@
+From: macos-local research
+Subject: [PATCH] Add default-off per-vCPU TCG BQL and exclusive-section source counters
+
+Expose opt-in x-sync-stats=on and read-only x-sync-stats-json on ARM CPUs to
+count, per vCPU without extra locks, each MTTCG outer-loop exit reason,
+cpu_exec BQL acquisition site, ERET hook BQL acquisition, ARM_CP_IO register
+read/write by register name, TLBI helper invocation by instruction name, and
+start_exclusive/async_safe_run_on_cpu source. Default-off; guest semantics and
+migrated state are unchanged.
+
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 767eae2..b3add9b 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -553,6 +553,7 @@ void cpu_exec_step_atomic(CPUState *cpu)
+ 
+     if (sigsetjmp(cpu->jmp_env, 0) == 0) {
+         start_exclusive();
++        cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.excl_step_atomic);
+         g_assert(cpu == current_cpu);
+         g_assert(!cpu->running);
+         cpu->running = true;
+@@ -725,6 +726,7 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *excp)
+         const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
+ 
+         bql_lock();
++        cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_do_interrupt);
+         tcg_ops->do_interrupt(cpu);
+         bql_unlock();
+         cpu->exception_index = -1;
+@@ -799,6 +801,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
+ #else
+     if (unlikely(cpu_test_interrupt(cpu, ~0))) {
+         bql_lock();
++        cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_handle_interrupt);
+         if (cpu_test_interrupt(cpu, CPU_INTERRUPT_DEBUG)) {
+             cpu_reset_interrupt(cpu, CPU_INTERRUPT_DEBUG);
+             cpu->exception_index = EXCP_DEBUG;
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index dc83f3b..e47a04e 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -428,6 +428,7 @@ void tlb_flush_by_mmuidx_all_cpus_synced(CPUState *src_cpu, MMUIdxMap idxmap)
+     tlb_debug("mmu_idx: 0x%"PRIx16"\n", idxmap);
+ 
+     flush_all_helper(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
++    cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_all);
+     async_safe_run_on_cpu(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
+ }
+ 
+@@ -631,6 +632,7 @@ void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+     if (idxmap < TARGET_PAGE_SIZE) {
+         flush_all_helper(src_cpu, tlb_flush_page_by_mmuidx_async_1,
+                          RUN_ON_CPU_TARGET_PTR(addr | idxmap));
++        cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_page);
+         async_safe_run_on_cpu(src_cpu, tlb_flush_page_by_mmuidx_async_1,
+                               RUN_ON_CPU_TARGET_PTR(addr | idxmap));
+     } else {
+@@ -651,6 +653,7 @@ void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+         d = g_new(TLBFlushPageByMMUIdxData, 1);
+         d->addr = addr;
+         d->idxmap = idxmap;
++        cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_page);
+         async_safe_run_on_cpu(src_cpu, tlb_flush_page_by_mmuidx_async_2,
+                               RUN_ON_CPU_HOST_PTR(d));
+     }
+@@ -840,6 +843,7 @@ void tlb_flush_range_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
+     }
+ 
+     p = g_memdup(&d, sizeof(d));
++    cpu_sync_stat_inc(src_cpu, &src_cpu->sync_stats_counters.excl_tlbi_range);
+     async_safe_run_on_cpu(src_cpu, tlb_flush_range_by_mmuidx_async_1,
+                           RUN_ON_CPU_HOST_PTR(p));
+ }
+@@ -1978,6 +1982,7 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
++    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_mmio);
+     return int_ld_mmio_beN(cpu, full, ret_be, addr, size, mmu_idx,
+                            type, ra, mr, mr_offset);
+ }
+@@ -1997,6 +2002,7 @@ static Int128 do_ld16_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
++    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_mmio);
+     a = int_ld_mmio_beN(cpu, full, ret_be, addr, size - 8, mmu_idx,
+                         MMU_DATA_LOAD, ra, mr, mr_offset);
+     b = int_ld_mmio_beN(cpu, full, ret_be, addr + size - 8, 8, mmu_idx,
+@@ -2492,6 +2498,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
++    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_mmio);
+     return int_st_mmio_leN(cpu, full, val_le, addr, size, mmu_idx,
+                            ra, mr, mr_offset);
+ }
+@@ -2510,6 +2517,7 @@ static uint64_t do_st16_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
++    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_mmio);
+     int_st_mmio_leN(cpu, full, int128_getlo(val_le), addr, 8,
+                     mmu_idx, ra, mr, mr_offset);
+     return int_st_mmio_leN(cpu, full, int128_gethi(val_le), addr + 8,
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+index 4313864..dece168 100644
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -803,6 +803,7 @@ void queue_tb_flush(CPUState *cs)
+ {
+     if (tcg_enabled()) {
+         unsigned tb_flush_count = qatomic_read(&tb_ctx.tb_flush_count);
++        cpu_sync_stat_inc(cs, &cs->sync_stats_counters.excl_tb_flush);
+         async_safe_run_on_cpu(cs, do_tb_flush,
+                               RUN_ON_CPU_HOST_INT(tb_flush_count));
+     }
+diff --git a/accel/tcg/tcg-accel-ops-mttcg.c b/accel/tcg/tcg-accel-ops-mttcg.c
+index e7edd19..af49aec 100644
+--- a/accel/tcg/tcg-accel-ops-mttcg.c
++++ b/accel/tcg/tcg-accel-ops-mttcg.c
+@@ -95,6 +95,31 @@ static void *mttcg_cpu_thread_fn(void *arg)
+             bql_unlock();
+             excp = tcg_cpu_exec(cpu);
+             bql_lock();
++            if (unlikely(cpu->sync_stats)) {
++                switch (excp) {
++                case EXCP_INTERRUPT:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_interrupt);
++                    break;
++                case EXCP_HLT:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_hlt);
++                    break;
++                case EXCP_HALTED:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_halted);
++                    break;
++                case EXCP_YIELD:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_yield);
++                    break;
++                case EXCP_ATOMIC:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_atomic);
++                    break;
++                case EXCP_DEBUG:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_debug);
++                    break;
++                default:
++                    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.exit_other);
++                    break;
++                }
++            }
+             switch (excp) {
+             case EXCP_DEBUG:
+                 cpu_handle_guest_debug(cpu);
+@@ -109,6 +134,7 @@ static void *mttcg_cpu_thread_fn(void *arg)
+                 bql_unlock();
+                 cpu_exec_step_atomic(cpu);
+                 bql_lock();
++                cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.bql_atomic_reacquire);
+             default:
+                 /* Ignore everything else? */
+                 break;
+diff --git a/cpu-common.c b/cpu-common.c
+index adb76b3..b6e195c 100644
+--- a/cpu-common.c
++++ b/cpu-common.c
+@@ -358,6 +358,7 @@ void process_queued_cpu_work(CPUState *cpu)
+         qemu_mutex_unlock(&cpu->work_mutex);
+         return;
+     }
++    cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_batches);
+     while (!QSIMPLEQ_EMPTY(&cpu->work_list)) {
+         wi = QSIMPLEQ_FIRST(&cpu->work_list);
+         QSIMPLEQ_REMOVE_HEAD(&cpu->work_list, node);
+@@ -374,7 +375,9 @@ void process_queued_cpu_work(CPUState *cpu)
+             wi->func(cpu, wi->data);
+             end_exclusive();
+             bql_lock();
++            cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_exclusive);
+         } else {
++            cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.queued_work_ordinary);
+             wi->func(cpu, wi->data);
+         }
+         qemu_mutex_lock(&cpu->work_mutex);
+diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
+index 4f4c87f..d2ee5ca 100644
+--- a/hw/core/cpu-common.c
++++ b/hw/core/cpu-common.c
+@@ -119,6 +119,7 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
+     cpu->exception_index = -1;
+     cpu->crash_occurred = false;
+     cpu->cflags_next_tb = -1;
++    cpu_sync_stats_reset(cpu);
+ 
+     cpu_exec_reset_hold(cpu);
+ }
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index 328e300..a79ce3d 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -31,6 +31,7 @@
+ #include "qapi/qapi-types-machine.h"
+ #include "qapi/qapi-types-run-state.h"
+ #include "qemu/bitmap.h"
++#include "qemu/atomic.h"
+ #include "qemu/rcu_queue.h"
+ #include "qemu/queue.h"
+ #include "qemu/lockcnt.h"
+@@ -583,6 +584,39 @@ struct CPUState {
+     /* track IOMMUs whose translations we've cached in the TCG TLB */
+     GArray *iommu_notifiers;
+ 
++    /* Default-off per-vCPU TCG lock/exclusive trigger counters (not migrated). */
++    bool sync_stats;
++    struct {
++        uint64_t exit_interrupt;
++        uint64_t exit_hlt;
++        uint64_t exit_halted;
++        uint64_t exit_yield;
++        uint64_t exit_atomic;
++        uint64_t exit_debug;
++        uint64_t exit_other;
++        uint64_t bql_atomic_reacquire;
++        uint64_t halt_cond_waits;
++        uint64_t queued_work_batches;
++        uint64_t queued_work_ordinary;
++        uint64_t queued_work_exclusive;
++        uint64_t bql_do_interrupt;
++        uint64_t do_interrupt_svc;
++        uint64_t do_interrupt_abort;
++        uint64_t do_interrupt_irq;
++        uint64_t do_interrupt_other;
++        uint64_t bql_handle_interrupt;
++        uint64_t bql_eret;
++        uint64_t bql_cpreg_read;
++        uint64_t bql_cpreg_write;
++        uint64_t bql_mmio;
++        uint64_t bql_ptw;
++        uint64_t excl_tlbi_all;
++        uint64_t excl_tlbi_page;
++        uint64_t excl_tlbi_range;
++        uint64_t excl_step_atomic;
++        uint64_t excl_tb_flush;
++    } sync_stats_counters;
++
+     /*
+      * MUST BE LAST in order to minimize the displacement to CPUArchState.
+      */
+@@ -590,6 +624,23 @@ struct CPUState {
+     CPUNegativeOffsetState neg;
+ };
+ 
++static inline void cpu_sync_stat_inc(CPUState *cpu, uint64_t *counter)
++{
++    if (unlikely(cpu && cpu->sync_stats)) {
++        qatomic_set(counter, *counter + 1);
++    }
++}
++
++static inline void cpu_sync_stats_reset(CPUState *cpu)
++{
++    uint64_t *p = (uint64_t *)&cpu->sync_stats_counters;
++    size_t n = sizeof(cpu->sync_stats_counters) / sizeof(uint64_t);
++
++    for (size_t i = 0; i < n; i++) {
++        qatomic_set(&p[i], 0);
++    }
++}
++
+ /* Validate placement of CPUNegativeOffsetState. */
+ QEMU_BUILD_BUG_ON(offsetof(CPUState, neg) !=
+                   sizeof(CPUState) - sizeof(CPUNegativeOffsetState));
+diff --git a/system/cpus.c b/system/cpus.c
+index e11a5aa..fdfc364 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -412,6 +412,7 @@ void qemu_process_cpu_events(CPUState *cpu)
+             slept = true;
+             qemu_plugin_vcpu_idle_cb(cpu);
+         }
++        cpu_sync_stat_inc(cpu, &cpu->sync_stats_counters.halt_cond_waits);
+         qemu_cond_wait(cpu->halt_cond, &bql);
+     }
+     if (slept) {
+diff --git a/system/physmem.c b/system/physmem.c
+index bd5f41c..948a961 100644
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -3235,6 +3235,7 @@ bool prepare_mmio_access(MemoryRegion *mr)
+ 
+     if (!bql_locked() && !mr->lockless_io) {
+         bql_lock();
++        cpu_sync_stat_inc(current_cpu, &current_cpu->sync_stats_counters.bql_mmio);
+         release_lock = true;
+     }
+     if (mr->flush_coalesced_mmio) {
+diff --git a/target/arm/cpregs.h b/target/arm/cpregs.h
+index ce651a4..c2baba1 100644
+--- a/target/arm/cpregs.h
++++ b/target/arm/cpregs.h
+@@ -1114,6 +1114,9 @@ struct ARMCPRegInfo {
+      * fieldoffset is 0 then no reset will be done.
+      */
+     CPResetFn *resetfn;
++    /* Per-vCPU helper access counts when x-sync-stats=on (not migrated). */
++    uint64_t sync_reads;
++    uint64_t sync_writes;
+ };
+ 
+ void define_one_arm_cp_reg(ARMCPU *cpu, const ARMCPRegInfo *regs);
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 9d012d1..b0e3d3e 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -333,6 +333,22 @@ static void arm_init_fp_status(float_status *s)
+     /* We want 0 for all other settings. */
+ }
+ 
++static void cpreg_sync_reset_one(gpointer key, gpointer value, gpointer opaque)
++{
++    ARMCPRegInfo *ri = value;
++
++    qatomic_set(&ri->sync_reads, 0);
++    qatomic_set(&ri->sync_writes, 0);
++}
++
++void arm_cpu_sync_stats_reset(ARMCPU *cpu)
++{
++    cpu_sync_stats_reset(CPU(cpu));
++    if (cpu->cp_regs) {
++        g_hash_table_foreach(cpu->cp_regs, cpreg_sync_reset_one, NULL);
++    }
++}
++
+ static void arm_cpu_reset_hold(Object *obj, ResetType type)
+ {
+     CPUState *cs = CPU(obj);
+@@ -352,6 +368,7 @@ static void arm_cpu_reset_hold(Object *obj, ResetType type)
+ #ifndef CONFIG_USER_ONLY
+     arm_timeout_diag_reset(cpu);
+ #endif
++    arm_cpu_sync_stats_reset(cpu);
+ 
+     g_hash_table_foreach(cpu->cp_regs, cp_reg_reset, cpu);
+     g_hash_table_foreach(cpu->cp_regs, cp_reg_check_reset, cpu);
+@@ -1266,6 +1283,180 @@ static void arm_get_pauth_memo_misses(Object *obj, Visitor *v, const char *name,
+     visit_type_uint64(v, name, &value, errp);
+ }
+ 
++static void append_json_escaped_str(GString *out, const char *s)
++{
++    g_string_append_c(out, '"');
++    for (const unsigned char *p = (const unsigned char *)(s ? s : "?"); *p; p++) {
++        if (*p == '"' || *p == '\\') {
++            g_string_append_c(out, '\\');
++            g_string_append_c(out, (char)*p);
++        } else if (*p < 0x20) {
++            g_string_append_printf(out, "\\u%04x", *p);
++        } else {
++            g_string_append_c(out, (char)*p);
++        }
++    }
++    g_string_append_c(out, '"');
++}
++
++static int cmp_cstr_ptr(const void *a, const void *b)
++{
++    const char *sa = *(const char * const *)a;
++    const char *sb = *(const char * const *)b;
++    return strcmp(sa, sb);
++}
++
++static void append_rw_pair_map(GString *out, GHashTable *map)
++{
++    guint len = 0;
++    gpointer *keys = g_hash_table_get_keys_as_array(map, &len);
++
++    if (len > 1) {
++        qsort(keys, len, sizeof(gpointer), cmp_cstr_ptr);
++    }
++    g_string_append_c(out, '{');
++    for (guint i = 0; i < len; i++) {
++        const char *k = keys[i];
++        const uint64_t *rw = g_hash_table_lookup(map, k);
++        if (i > 0) {
++            g_string_append_c(out, ',');
++        }
++        append_json_escaped_str(out, k);
++        g_string_append_printf(out, ":[%" PRIu64 ",%" PRIu64 "]", rw[0], rw[1]);
++    }
++    g_string_append_c(out, '}');
++    g_free(keys);
++}
++
++static bool is_tlbi_reg_name(const char *name)
++{
++    return name && (g_str_has_prefix(name, "TLBI") ||
++                    g_str_has_prefix(name, "ITLBI") ||
++                    g_str_has_prefix(name, "DTLBI"));
++}
++
++static char *arm_get_sync_stats_json(Object *obj, Error **errp)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++    CPUState *cs = CPU(cpu);
++    GString *out = g_string_new(NULL);
++
++    if (!cs->sync_stats) {
++        g_string_append(out, "{\"enabled\":false}");
++        return g_string_free(out, FALSE);
++    }
++
++    GHashTable *seen_ptrs = g_hash_table_new(g_direct_hash, g_direct_equal);
++    GHashTable *io_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
++    GHashTable *tlbi_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
++    GHashTable *other_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
++
++    if (cpu->cp_regs) {
++        GHashTableIter iter;
++        gpointer key, value;
++        g_hash_table_iter_init(&iter, cpu->cp_regs);
++        while (g_hash_table_iter_next(&iter, &key, &value)) {
++            const ARMCPRegInfo *ri = value;
++            if (!ri || g_hash_table_contains(seen_ptrs, ri)) {
++                continue;
++            }
++            g_hash_table_add(seen_ptrs, (gpointer)ri);
++            uint64_t r = qatomic_read(&ri->sync_reads);
++            uint64_t w = qatomic_read(&ri->sync_writes);
++            if (r == 0 && w == 0) {
++                continue;
++            }
++            const char *rname = ri->name ? ri->name : "unnamed";
++            GHashTable *dest = (ri->type & ARM_CP_IO) ? io_map
++                               : (is_tlbi_reg_name(rname) ? tlbi_map : other_map);
++            uint64_t *slot = g_hash_table_lookup(dest, rname);
++            if (!slot) {
++                slot = g_new0(uint64_t, 2);
++                g_hash_table_insert(dest, g_strdup(rname), slot);
++            }
++            slot[0] += r;
++            slot[1] += w;
++        }
++    }
++
++    #define RD_CNT(field) qatomic_read(&cs->sync_stats_counters.field)
++    g_string_append_printf(
++        out,
++        "{\"enabled\":true"
++        ",\"exit_interrupt\":%" PRIu64
++        ",\"exit_hlt\":%" PRIu64
++        ",\"exit_halted\":%" PRIu64
++        ",\"exit_yield\":%" PRIu64
++        ",\"exit_atomic\":%" PRIu64
++        ",\"exit_debug\":%" PRIu64
++        ",\"exit_other\":%" PRIu64
++        ",\"bql_atomic_reacquire\":%" PRIu64
++        ",\"halt_cond_waits\":%" PRIu64
++        ",\"queued_work_batches\":%" PRIu64
++        ",\"queued_work_ordinary\":%" PRIu64
++        ",\"queued_work_exclusive\":%" PRIu64
++        ",\"bql_do_interrupt\":%" PRIu64
++        ",\"do_interrupt_svc\":%" PRIu64
++        ",\"do_interrupt_abort\":%" PRIu64
++        ",\"do_interrupt_irq\":%" PRIu64
++        ",\"do_interrupt_other\":%" PRIu64
++        ",\"bql_handle_interrupt\":%" PRIu64
++        ",\"bql_eret\":%" PRIu64
++        ",\"bql_cpreg_read\":%" PRIu64
++        ",\"bql_cpreg_write\":%" PRIu64
++        ",\"bql_mmio\":%" PRIu64
++        ",\"bql_ptw\":%" PRIu64
++        ",\"excl_tlbi_all\":%" PRIu64
++        ",\"excl_tlbi_page\":%" PRIu64
++        ",\"excl_tlbi_range\":%" PRIu64
++        ",\"excl_step_atomic\":%" PRIu64
++        ",\"excl_tb_flush\":%" PRIu64,
++        RD_CNT(exit_interrupt),
++        RD_CNT(exit_hlt),
++        RD_CNT(exit_halted),
++        RD_CNT(exit_yield),
++        RD_CNT(exit_atomic),
++        RD_CNT(exit_debug),
++        RD_CNT(exit_other),
++        RD_CNT(bql_atomic_reacquire),
++        RD_CNT(halt_cond_waits),
++        RD_CNT(queued_work_batches),
++        RD_CNT(queued_work_ordinary),
++        RD_CNT(queued_work_exclusive),
++        RD_CNT(bql_do_interrupt),
++        RD_CNT(do_interrupt_svc),
++        RD_CNT(do_interrupt_abort),
++        RD_CNT(do_interrupt_irq),
++        RD_CNT(do_interrupt_other),
++        RD_CNT(bql_handle_interrupt),
++        RD_CNT(bql_eret),
++        RD_CNT(bql_cpreg_read),
++        RD_CNT(bql_cpreg_write),
++        RD_CNT(bql_mmio),
++        RD_CNT(bql_ptw),
++        RD_CNT(excl_tlbi_all),
++        RD_CNT(excl_tlbi_page),
++        RD_CNT(excl_tlbi_range),
++        RD_CNT(excl_step_atomic),
++        RD_CNT(excl_tb_flush)
++    );
++    #undef RD_CNT
++
++    g_string_append(out, ",\"cpreg_io\":");
++    append_rw_pair_map(out, io_map);
++    g_string_append(out, ",\"tlbi\":");
++    append_rw_pair_map(out, tlbi_map);
++    g_string_append(out, ",\"cpreg_non_io_helper\":");
++    append_rw_pair_map(out, other_map);
++    g_string_append_c(out, '}');
++
++    g_hash_table_destroy(other_map);
++    g_hash_table_destroy(tlbi_map);
++    g_hash_table_destroy(io_map);
++    g_hash_table_destroy(seen_ptrs);
++    return g_string_free(out, FALSE);
++}
++
+ static void arm_cpu_initfn(Object *obj)
+ {
+     ARMCPU *cpu = ARM_CPU(obj);
+@@ -1278,6 +1469,8 @@ static void arm_cpu_initfn(Object *obj)
+                         arm_get_pauth_memo_hits, NULL, NULL, NULL);
+     object_property_add(obj, "x-pauth-memo-misses", "uint64",
+                         arm_get_pauth_memo_misses, NULL, NULL, NULL);
++    object_property_add_str(obj, "x-sync-stats-json",
++                            arm_get_sync_stats_json, NULL);
+ 
+     cpu->cp_regs = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+                                          NULL, g_free);
+@@ -1907,6 +2100,7 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
+         error_setg(errp, "Memo capacity/statistics require x-pauth-memo=on");
+         return;
+     }
++    cs->sync_stats = cpu->prop_sync_stats;
+ 
+ #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+     /* Use pc-relative instructions in system-mode */
+@@ -2602,6 +2796,7 @@ static const Property arm_cpu_properties[] = {
+     DEFINE_PROP_UINT32("x-pauth-memo-entries", ARMCPU, prop_pauth_memo_entries,
+                        ARM_PAUTH_MEMO_DEFAULT_ENTRIES),
+     DEFINE_PROP_BOOL("x-pauth-memo-stats", ARMCPU, prop_pauth_memo_stats, false),
++    DEFINE_PROP_BOOL("x-sync-stats", ARMCPU, prop_sync_stats, false),
+ #ifndef CONFIG_USER_ONLY
+     DEFINE_PROP_STRING("x-webkit-timeout-diagnostic", ARMCPU,
+                        prop_webkit_timeout_diagnostic),
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index f1133fc..48e6481 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1123,6 +1123,7 @@ struct ArchCPU {
+     bool prop_pauth_memo;
+     uint32_t prop_pauth_memo_entries;
+     bool prop_pauth_memo_stats;
++    bool prop_sync_stats;
+     char *prop_webkit_timeout_diagnostic;
+     ARMTimeoutDiagnostic *webkit_timeout_diagnostic;
+ 
+@@ -1310,6 +1311,7 @@ extern const VMStateDescription vmstate_arm_cpu;
+ 
+ void arm_cpu_do_interrupt(CPUState *cpu);
+ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
++void arm_cpu_sync_stats_reset(ARMCPU *cpu);
+ 
+ typedef struct ARMGranuleProtectionConfig {
+     /* GPCCR_EL3 */
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 3e51e5f..d422c43 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -9873,6 +9873,30 @@ void arm_cpu_do_interrupt(CPUState *cs)
+     unsigned int new_el = env->exception.target_el;
+     uint64_t last_pc = cs->cc->get_pc(cs);
+ 
++    if (unlikely(cs->sync_stats)) {
++        switch (cs->exception_index) {
++        case EXCP_SWI:
++            cpu_sync_stat_inc(cs, &cs->sync_stats_counters.do_interrupt_svc);
++            break;
++        case EXCP_PREFETCH_ABORT:
++        case EXCP_DATA_ABORT:
++            cpu_sync_stat_inc(cs, &cs->sync_stats_counters.do_interrupt_abort);
++            break;
++        case EXCP_IRQ:
++        case EXCP_FIQ:
++        case EXCP_VIRQ:
++        case EXCP_VFIQ:
++        case EXCP_NMI:
++        case EXCP_VINMI:
++        case EXCP_VFNMI:
++            cpu_sync_stat_inc(cs, &cs->sync_stats_counters.do_interrupt_irq);
++            break;
++        default:
++            cpu_sync_stat_inc(cs, &cs->sync_stats_counters.do_interrupt_other);
++            break;
++        }
++    }
++
+     assert(!arm_feature(env, ARM_FEATURE_M));
+ 
+     arm_log_exception(cs);
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+index 7b8eaea..955b529 100644
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -1169,6 +1169,7 @@ static int cpu_post_load(void *opaque, int version_id)
+     qatomic_set(&env->pauth_memo_hits, 0);
+     qatomic_set(&env->pauth_memo_misses, 0);
+     arm_timeout_diag_reset(cpu);
++    arm_cpu_sync_stats_reset(cpu);
+ 
+     trace_cpu_post_load(cpu->cpreg_vmstate_array_len,
+                         cpu->cpreg_array_len);
+diff --git a/target/arm/ptw.c b/target/arm/ptw.c
+index b94e318..3a33c48 100644
+--- a/target/arm/ptw.c
++++ b/target/arm/ptw.c
+@@ -969,6 +969,7 @@ static uint64_t arm_casq_ptw(CPUARMState *env, uint64_t old_val,
+ 
+         if (need_lock) {
+             bql_lock();
++            cpu_sync_stat_inc(cs, &cs->sync_stats_counters.bql_ptw);
+         }
+         if (ptw->out_be) {
+             cur_val = address_space_ldq_be(as, ptw->out_phys, attrs, &result);
+diff --git a/target/arm/tcg/helper-a64.c b/target/arm/tcg/helper-a64.c
+index c7ddc89..737040e 100644
+--- a/target/arm/tcg/helper-a64.c
++++ b/target/arm/tcg/helper-a64.c
+@@ -694,6 +694,7 @@ void HELPER(exception_return)(CPUARMState *env, uint64_t new_pc)
+     }
+ 
+     bql_lock();
++    cpu_sync_stat_inc(env_cpu(env), &env_cpu(env)->sync_stats_counters.bql_eret);
+     arm_call_pre_el_change_hook(cpu);
+     bql_unlock();
+ 
+@@ -761,6 +762,7 @@ void HELPER(exception_return)(CPUARMState *env, uint64_t new_pc)
+     aarch64_sve_change_el(env, cur_el, new_el, return_to_aa64);
+ 
+     bql_lock();
++    cpu_sync_stat_inc(env_cpu(env), &env_cpu(env)->sync_stats_counters.bql_eret);
+     arm_call_el_change_hook(cpu);
+     bql_unlock();
+ 
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+index 5402259..077e24c 100644
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -812,6 +812,7 @@ void HELPER(cpsr_write_eret)(CPUARMState *env, uint32_t val)
+     uint32_t mask;
+ 
+     bql_lock();
++    cpu_sync_stat_inc(env_cpu(env), &env_cpu(env)->sync_stats_counters.bql_eret);
+     arm_call_pre_el_change_hook(env_archcpu(env));
+     bql_unlock();
+ 
+@@ -827,6 +828,7 @@ void HELPER(cpsr_write_eret)(CPUARMState *env, uint32_t val)
+     arm_rebuild_hflags(env);
+ 
+     bql_lock();
++    cpu_sync_stat_inc(env_cpu(env), &env_cpu(env)->sync_stats_counters.bql_eret);
+     arm_call_el_change_hook(env_archcpu(env));
+     bql_unlock();
+ }
+@@ -1253,27 +1255,45 @@ void HELPER(tidcp_el0)(CPUARMState *env, uint32_t syndrome)
+ 
+ void HELPER(set_cp_reg)(CPUARMState *env, const void *rip, uint32_t value)
+ {
+-    const ARMCPRegInfo *ri = rip;
++    ARMCPRegInfo *ri = (ARMCPRegInfo *)rip;
++    CPUState *cs = env_cpu(env);
+ 
+     if (ri->type & ARM_CP_IO) {
+         bql_lock();
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&cs->sync_stats_counters.bql_cpreg_write,
++                        cs->sync_stats_counters.bql_cpreg_write + 1);
++            qatomic_set(&ri->sync_writes, ri->sync_writes + 1);
++        }
+         ri->writefn(env, ri, value);
+         bql_unlock();
+     } else {
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&ri->sync_writes, ri->sync_writes + 1);
++        }
+         ri->writefn(env, ri, value);
+     }
+ }
+ 
+ uint32_t HELPER(get_cp_reg)(CPUARMState *env, const void *rip)
+ {
+-    const ARMCPRegInfo *ri = rip;
++    ARMCPRegInfo *ri = (ARMCPRegInfo *)rip;
++    CPUState *cs = env_cpu(env);
+     uint32_t res;
+ 
+     if (ri->type & ARM_CP_IO) {
+         bql_lock();
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&cs->sync_stats_counters.bql_cpreg_read,
++                        cs->sync_stats_counters.bql_cpreg_read + 1);
++            qatomic_set(&ri->sync_reads, ri->sync_reads + 1);
++        }
+         res = ri->readfn(env, ri);
+         bql_unlock();
+     } else {
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&ri->sync_reads, ri->sync_reads + 1);
++        }
+         res = ri->readfn(env, ri);
+     }
+ 
+@@ -1282,27 +1302,45 @@ uint32_t HELPER(get_cp_reg)(CPUARMState *env, const void *rip)
+ 
+ void HELPER(set_cp_reg64)(CPUARMState *env, const void *rip, uint64_t value)
+ {
+-    const ARMCPRegInfo *ri = rip;
++    ARMCPRegInfo *ri = (ARMCPRegInfo *)rip;
++    CPUState *cs = env_cpu(env);
+ 
+     if (ri->type & ARM_CP_IO) {
+         bql_lock();
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&cs->sync_stats_counters.bql_cpreg_write,
++                        cs->sync_stats_counters.bql_cpreg_write + 1);
++            qatomic_set(&ri->sync_writes, ri->sync_writes + 1);
++        }
+         ri->writefn(env, ri, value);
+         bql_unlock();
+     } else {
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&ri->sync_writes, ri->sync_writes + 1);
++        }
+         ri->writefn(env, ri, value);
+     }
+ }
+ 
+ uint64_t HELPER(get_cp_reg64)(CPUARMState *env, const void *rip)
+ {
+-    const ARMCPRegInfo *ri = rip;
++    ARMCPRegInfo *ri = (ARMCPRegInfo *)rip;
++    CPUState *cs = env_cpu(env);
+     uint64_t res;
+ 
+     if (ri->type & ARM_CP_IO) {
+         bql_lock();
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&cs->sync_stats_counters.bql_cpreg_read,
++                        cs->sync_stats_counters.bql_cpreg_read + 1);
++            qatomic_set(&ri->sync_reads, ri->sync_reads + 1);
++        }
+         res = ri->readfn(env, ri);
+         bql_unlock();
+     } else {
++        if (unlikely(cs->sync_stats)) {
++            qatomic_set(&ri->sync_reads, ri->sync_reads + 1);
++        }
+         res = ri->readfn(env, ri);
+     }
+ 

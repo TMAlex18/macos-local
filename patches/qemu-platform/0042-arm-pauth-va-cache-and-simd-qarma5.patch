@@ -1,0 +1,506 @@
+From: macos-local research
+Subject: [PATCH] Per-vCPU PAuth VA parameter cache and SSSE3 QARMA5/QARMA3
+
+Cache aa64_pauth_va_parameters() per (mmu_idx, TCR) on realized CPUs and
+accelerate architected QARMA5/QARMA3 on x86_64 SSSE3 hosts via 16-nibble
+pshufb S-boxes and permutations, self-tested across 2,048 deterministic
+random vectors at CPU realize.
+
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -2773,6 +2773,10 @@
+         if (cpu_isar_feature(aa64_mte, cpu)) {
+             assert(dcz_blocklen >= 2 * TAG_GRANULE);
+         }
++#ifdef CONFIG_TCG
++        arm_pauth_qarma_selftest();
++#endif
++        env->pauth_va_cache_enabled = true;
+     }
+ 
+     qemu_init_vcpu(cs);
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -159,6 +159,15 @@
+     uint8_t algorithm;
+     bool valid;
+ } ARMPAuthMemoEntry;
++
++typedef struct ARMPAuthVACacheSlot {
++    uint64_t tcr;
++    uint32_t mmu_idx;
++    uint8_t tsz[2];
++    uint8_t tbi_mask;
++    uint8_t mtx_mask;
++    bool valid;
++} ARMPAuthVACacheSlot;
+ 
+ /* See the commentary above the TBFLAG field definitions.  */
+ typedef struct CPUARMTBFlags {
+@@ -786,6 +795,7 @@
+ 
+     /* Per-vCPU pure-function memoization; reset also clears cached key copies. */
+     ARMPAuthMemoEntry pauth_memo[ARM_PAUTH_MEMO_MAX_ENTRIES];
++    ARMPAuthVACacheSlot pauth_va_cache[16];
+ 
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+@@ -795,6 +805,7 @@
+     /* Non-migrated diagnostics; reset/post-load explicitly use atomic stores. */
+     uint64_t pauth_memo_hits;
+     uint64_t pauth_memo_misses;
++    bool pauth_va_cache_enabled;
+ 
+     /* Internal CPU feature flags.  */
+     uint64_t features;
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -10302,6 +10302,39 @@
+ ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
+                                          ARMMMUIdx mmu_idx, bool data)
+ {
++    if (likely(env->pauth_va_cache_enabled)) {
++        uint64_t tcr = regime_tcr(env, mmu_idx);
++        ARMPAuthVACacheSlot *slot = &env->pauth_va_cache[(unsigned)mmu_idx & 15];
++        unsigned select = extract64(va, 55, 1);
++
++        if (unlikely(!slot->valid || slot->mmu_idx != (uint32_t)mmu_idx ||
++                     slot->tcr != tcr)) {
++            ARMVAParameters i0 = aa64_va_parameters_impl(env, 0, mmu_idx,
++                                                         false, false, true);
++            ARMVAParameters i1 = aa64_va_parameters_impl(env, 1ULL << 55,
++                                                         mmu_idx, false,
++                                                         false, true);
++            ARMVAParameters d0 = aa64_va_parameters_impl(env, 0, mmu_idx,
++                                                         true, false, true);
++            ARMVAParameters d1 = aa64_va_parameters_impl(env, 1ULL << 55,
++                                                         mmu_idx, true,
++                                                         false, true);
++            slot->tcr = tcr;
++            slot->mmu_idx = (uint32_t)mmu_idx;
++            slot->tsz[0] = i0.tsz;
++            slot->tsz[1] = i1.tsz;
++            slot->tbi_mask = (i0.tbi & 1) | ((i1.tbi & 1) << 1) |
++                             ((d0.tbi & 1) << 2) | ((d1.tbi & 1) << 3);
++            slot->mtx_mask = (i0.mtx & 1) | ((i1.mtx & 1) << 1);
++            slot->valid = true;
++        }
++        return (ARMVAParameters) {
++            .tsz = slot->tsz[select],
++            .tbi = (slot->tbi_mask >> (data * 2 + select)) & 1,
++            .mtx = (slot->mtx_mask >> select) & 1,
++        };
++    }
++
+     ARMVAParameters full = aa64_va_parameters_impl(env, va, mmu_idx,
+                                                   data, false, true);
+ 
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1471,6 +1471,9 @@
+  */
+ ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
+                                          ARMMMUIdx mmu_idx, bool data);
++uint64_t arm_pauth_computepac_architected_fast(uint64_t data, uint64_t modifier,
++                                               ARMPACKey key, bool isqarma3);
++void arm_pauth_qarma_selftest(void);
+ 
+ int aa64_va_parameter_mtx(uint64_t tcr, ARMMMUIdx mmu_idx);
+ int aa64_va_parameter_tbi(uint64_t tcr, ARMMMUIdx mmu_idx);
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -1166,6 +1166,7 @@
+ 
+     /* Optional derived cache is local to this CPU and is not migrated. */
+     memset(env->pauth_memo, 0, sizeof(env->pauth_memo));
++    memset(env->pauth_va_cache, 0, sizeof(env->pauth_va_cache));
+     qatomic_set(&env->pauth_memo_hits, 0);
+     qatomic_set(&env->pauth_memo_misses, 0);
+     arm_timeout_diag_reset(cpu);
+diff --git a/target/arm/tcg/hflags.c b/target/arm/tcg/hflags.c
+--- a/target/arm/tcg/hflags.c
++++ b/target/arm/tcg/hflags.c
+@@ -13,6 +13,10 @@
+ #include "exec/translation-block.h"
+ #include "accel/tcg/cpu-ops.h"
+ #include "cpregs.h"
++#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
++#include <immintrin.h>
++#define ARM_PAUTH_HAVE_X86_SIMD 1
++#endif
+ 
+ static inline bool fgt_svc(CPUARMState *env, int el)
+ {
+@@ -866,3 +870,348 @@
+         .cs_base = flags.flags2,
+     };
+ }
++
++static uint64_t qarma_ref_cell_shuffle(uint64_t i)
++{
++    return (i & UINT64_C(0xf000000f00000000)) |
++           (rol64(i, 12) & UINT64_C(0x000000000000f00f)) |
++           (rol64(i, 16) & UINT64_C(0x00f0000000000000)) |
++           (rol64(i, 20) & UINT64_C(0x000000000f000000)) |
++           (rol64(i, 24) & UINT64_C(0x0000f0f000000000)) |
++           (rol64(i, 28) & UINT64_C(0x0000000000000f00)) |
++           (rol64(i, 36) & UINT64_C(0x0000000000f00000)) |
++           (rol64(i, 40) & UINT64_C(0x0f0f000000000000)) |
++           (rol64(i, 44) & UINT64_C(0x00000000000000f0)) |
++           (rol64(i, 48) & UINT64_C(0x00000f0000000000)) |
++           (rol64(i, 52) & UINT64_C(0x00000000f00f0000));
++}
++
++static uint64_t qarma_ref_cell_inv_shuffle(uint64_t i)
++{
++    return (i & UINT64_C(0xf000000f00000000)) |
++           (rol64(i, 12) & UINT64_C(0x00000f00f0000000)) |
++           (rol64(i, 16) & UINT64_C(0x0f00000000000000)) |
++           (rol64(i, 20) & UINT64_C(0x000000000f000000)) |
++           (rol64(i, 24) & UINT64_C(0x00000000000f0f00)) |
++           (rol64(i, 28) & UINT64_C(0x000f000000000000)) |
++           (rol64(i, 36) & UINT64_C(0x0000f00000000000)) |
++           (rol64(i, 40) & UINT64_C(0x0000000000f0f000)) |
++           (rol64(i, 44) & UINT64_C(0x00000000000000f0)) |
++           (rol64(i, 48) & UINT64_C(0x000000f000000000)) |
++           (rol64(i, 52) & UINT64_C(0x00f000000000000f));
++}
++
++static uint64_t qarma_ref_sub(uint64_t i)
++{
++    const uint64_t m = UINT64_C(0x1111111111111111);
++    uint64_t a = i & m, b = (i >> 1) & m;
++    uint64_t c = (i >> 2) & m, d = (i >> 3) & m;
++    uint64_t u = a ^ c, v = a & c, w = d & u;
++    uint64_t o0 = m ^ u ^ b ^ (~b & (v ^ w));
++    uint64_t o1 = m ^ b ^ c ^ (b & u) ^ ((a & d) & (b ^ c));
++    uint64_t o2 = u ^ (b & (c ^ d ^ w));
++    uint64_t o3 = m ^ a ^ d ^ (a & b) ^ (d & ((u & ~b) ^ v));
++    return o0 | (o1 << 1) | (o2 << 2) | (o3 << 3);
++}
++
++static uint64_t qarma_ref_sub1(uint64_t i)
++{
++    static const uint8_t sub1[16] = {
++        0xa, 0xd, 0xe, 0x6, 0xf, 0x7, 0x3, 0x5,
++        0x9, 0x8, 0x0, 0xc, 0xb, 0x1, 0x2, 0x4,
++    };
++    uint64_t o = 0;
++    for (int b = 0; b < 64; b += 4) {
++        o |= (uint64_t)sub1[(i >> b) & 0xf] << b;
++    }
++    return o;
++}
++
++static uint64_t qarma_ref_inv_sub(uint64_t i)
++{
++    const uint64_t m = UINT64_C(0x1111111111111111);
++    uint64_t a = i & m, b = (i >> 1) & m;
++    uint64_t c = (i >> 2) & m, d = (i >> 3) & m;
++    uint64_t u = a ^ c, v = a | c, w = c & ~a;
++    uint64_t o0 = m ^ u ^ (b & w) ^ (d & ~(b | u));
++    uint64_t o1 = (v & ~b) ^ (d & ~(a & ~c));
++    uint64_t o2 = o0 ^ a ^ (b & u) ^ (d & w);
++    uint64_t o3 = v ^ (b & ~a) ^ (d & (u ^ (b & c)));
++    return o0 | (o1 << 1) | (o2 << 2) | (o3 << 3);
++}
++
++static uint64_t qarma_ref_mult(uint64_t i)
++{
++    uint64_t r1 = ((i & UINT64_C(0x7777777777777777)) << 1) |
++                  ((i & UINT64_C(0x8888888888888888)) >> 3);
++    uint64_t r2 = ((i & UINT64_C(0x3333333333333333)) << 2) |
++                  ((i & UINT64_C(0xcccccccccccccccc)) >> 2);
++    return rol64(r1, 16) ^ ror64(r1, 16) ^ rol64(r2, 32);
++}
++
++static uint64_t qarma_ref_tweak_shuffle(uint64_t i)
++{
++    uint64_t o = (rol64(i, 12) & UINT64_C(0x000000000ff00000)) |
++                 (rol64(i, 16) & UINT64_C(0x0f00000000000000)) |
++                 (rol64(i, 24) & UINT64_C(0xf000000000000000)) |
++                 (rol64(i, 36) & UINT64_C(0x00000000000f0000)) |
++                 (rol64(i, 48) & UINT64_C(0x00ffffff0000ffff)) |
++                 (rol64(i, 60) & UINT64_C(0x00000000f0000000));
++    uint64_t r = o >> 1;
++    return (o & UINT64_C(0x00f00fff0ff0f0ff)) |
++           (r & UINT64_C(0x7707700070070700)) |
++           (((o ^ r) & UINT64_C(0x1101100010010100)) << 3);
++}
++
++static uint64_t qarma_ref_tweak_inv_shuffle(uint64_t i)
++{
++    uint64_t o = (rol64(i, 4) & UINT64_C(0x0000000f00000000)) |
++                 (rol64(i, 16) & UINT64_C(0xffff0000ffff00ff)) |
++                 (rol64(i, 28) & UINT64_C(0x0000f00000000000)) |
++                 (rol64(i, 40) & UINT64_C(0x000000f000000000)) |
++                 (rol64(i, 48) & UINT64_C(0x00000f0000000000)) |
++                 (rol64(i, 52) & UINT64_C(0x000000000000ff00));
++    return (o & UINT64_C(0x0fff0000f0fffff0)) |
++           ((o << 1) & UINT64_C(0xe000eeee0e00000e)) |
++           ((o ^ (o >> 3)) & UINT64_C(0x1000111101000001));
++}
++
++static uint64_t qarma_scalar_compute(uint64_t data, uint64_t modifier,
++                                     ARMPACKey key, bool isqarma3)
++{
++    static const uint64_t RC[5] = {
++        0x0000000000000000ull,
++        0x13198A2E03707344ull,
++        0xA4093822299F31D0ull,
++        0x082EFA98EC4E6C89ull,
++        0x452821E638D01377ull,
++    };
++    const uint64_t alpha = 0xC0AC29B7C97C50DDull;
++    int iterations = isqarma3 ? 2 : 4;
++    uint64_t key0 = key.hi, key1 = key.lo;
++    uint64_t modk0 = (key0 << 63) | ((key0 >> 1) ^ (key0 >> 63));
++    uint64_t runningmod = modifier;
++    uint64_t workingval = data ^ key0;
++    uint64_t roundkey;
++
++    for (int i = 0; i <= iterations; ++i) {
++        roundkey = key1 ^ runningmod;
++        workingval ^= roundkey ^ RC[i];
++        if (i > 0) {
++            workingval = qarma_ref_cell_shuffle(workingval);
++            workingval = qarma_ref_mult(workingval);
++        }
++        workingval = isqarma3 ? qarma_ref_sub1(workingval)
++                              : qarma_ref_sub(workingval);
++        runningmod = qarma_ref_tweak_shuffle(runningmod);
++    }
++    workingval ^= modk0 ^ runningmod;
++    workingval = qarma_ref_cell_shuffle(workingval);
++    workingval = qarma_ref_mult(workingval);
++    workingval = isqarma3 ? qarma_ref_sub1(workingval)
++                          : qarma_ref_sub(workingval);
++    workingval = qarma_ref_cell_shuffle(workingval);
++    workingval = qarma_ref_mult(workingval);
++    workingval ^= key1;
++    workingval = qarma_ref_cell_inv_shuffle(workingval);
++    workingval = isqarma3 ? qarma_ref_sub1(workingval)
++                          : qarma_ref_inv_sub(workingval);
++    workingval = qarma_ref_mult(workingval);
++    workingval = qarma_ref_cell_inv_shuffle(workingval);
++    workingval ^= key0 ^ runningmod;
++    for (int i = 0; i <= iterations; ++i) {
++        workingval = isqarma3 ? qarma_ref_sub1(workingval)
++                              : qarma_ref_inv_sub(workingval);
++        if (i < iterations) {
++            workingval = qarma_ref_mult(workingval);
++            workingval = qarma_ref_cell_inv_shuffle(workingval);
++        }
++        runningmod = qarma_ref_tweak_inv_shuffle(runningmod);
++        roundkey = key1 ^ runningmod;
++        workingval ^= RC[iterations - i] ^ roundkey ^ alpha;
++    }
++    return workingval ^ modk0;
++}
++
++#ifdef ARM_PAUTH_HAVE_X86_SIMD
++static bool arm_pauth_use_ssse3;
++
++static inline __attribute__((always_inline, target("ssse3")))
++__m128i qarma_unpack_u64(uint64_t x)
++{
++    const __m128i mask = _mm_set1_epi8(0x0f);
++    __m128i v = _mm_cvtsi64_si128((int64_t)x);
++    __m128i lo = _mm_and_si128(v, mask);
++    __m128i hi = _mm_and_si128(_mm_srli_epi16(v, 4), mask);
++    return _mm_unpacklo_epi8(lo, hi);
++}
++
++static inline __attribute__((always_inline, target("ssse3")))
++uint64_t qarma_pack_u64(__m128i w)
++{
++    __m128i words = _mm_maddubs_epi16(w, _mm_set1_epi16(0x1001));
++    __m128i bytes = _mm_packus_epi16(words, words);
++    return (uint64_t)_mm_cvtsi128_si64(bytes);
++}
++
++static inline __attribute__((always_inline, target("ssse3")))
++__m128i qarma_simd_mult(__m128i w, __m128i rot1_lut, __m128i rot2_lut)
++{
++    __m128i r1 = _mm_shuffle_epi8(rot1_lut, w);
++    __m128i r2 = _mm_shuffle_epi8(rot2_lut, w);
++    __m128i a = _mm_shuffle_epi32(r1, _MM_SHUFFLE(2, 1, 0, 3));
++    __m128i b = _mm_shuffle_epi32(r1, _MM_SHUFFLE(0, 3, 2, 1));
++    __m128i c = _mm_shuffle_epi32(r2, _MM_SHUFFLE(1, 0, 3, 2));
++    return _mm_xor_si128(_mm_xor_si128(a, b), c);
++}
++
++static inline __attribute__((always_inline, target("ssse3")))
++__m128i qarma_simd_tweak_step(__m128i t, __m128i perm_tweak,
++                              __m128i lfsr_lut, __m128i fb_mask)
++{
++    __m128i o = _mm_shuffle_epi8(t, perm_tweak);
++    __m128i fb = _mm_shuffle_epi8(lfsr_lut, o);
++    return _mm_or_si128(_mm_andnot_si128(fb_mask, o),
++                        _mm_and_si128(fb_mask, fb));
++}
++
++static uint64_t __attribute__((target("ssse3")))
++qarma_ssse3_compute(uint64_t data, uint64_t modifier,
++                    ARMPACKey key, bool isqarma3)
++{
++    static const uint64_t RC[5] = {
++        0x0000000000000000ull,
++        0x13198A2E03707344ull,
++        0xA4093822299F31D0ull,
++        0x082EFA98EC4E6C89ull,
++        0x452821E638D01377ull,
++    };
++    const __m128i sbox_fwd = isqarma3 ?
++        _mm_setr_epi8(0xa, 0xd, 0xe, 0x6, 0xf, 0x7, 0x3, 0x5,
++                      0x9, 0x8, 0x0, 0xc, 0xb, 0x1, 0x2, 0x4) :
++        _mm_setr_epi8(0xb, 0x6, 0x8, 0xf, 0xc, 0x0, 0x9, 0xe,
++                      0x3, 0x7, 0x4, 0x5, 0xd, 0x2, 0x1, 0xa);
++    const __m128i sbox_inv = isqarma3 ?
++        sbox_fwd :
++        _mm_setr_epi8(0x5, 0xe, 0xd, 0x8, 0xa, 0xb, 0x1, 0x9,
++                      0x2, 0x6, 0xf, 0x0, 0x4, 0xc, 0x7, 0x3);
++    const __m128i perm_shuf =
++        _mm_setr_epi8(13, 6, 11, 0, 7, 12, 1, 10, 8, 3, 14, 5, 2, 9, 4, 15);
++    const __m128i perm_inv =
++        _mm_setr_epi8(3, 6, 12, 9, 14, 11, 1, 4, 8, 13, 7, 2, 5, 0, 10, 15);
++    const __m128i perm_tweak =
++        _mm_setr_epi8(4, 5, 6, 7, 11, 2, 3, 8, 12, 13, 14, 15, 0, 1, 10, 9);
++    const __m128i fb_mask =
++        _mm_setr_epi8(0, 0, -1, 0, -1, 0, 0, -1, 0, 0, 0, -1, -1, 0, -1, -1);
++    const __m128i lfsr_lut =
++        _mm_setr_epi8(0x0, 0x8, 0x9, 0x1, 0x2, 0xa, 0xb, 0x3,
++                      0x4, 0xc, 0xd, 0x5, 0x6, 0xe, 0xf, 0x7);
++    const __m128i rot1_lut =
++        _mm_setr_epi8(0x0, 0x2, 0x4, 0x6, 0x8, 0xa, 0xc, 0xe,
++                      0x1, 0x3, 0x5, 0x7, 0x9, 0xb, 0xd, 0xf);
++    const __m128i rot2_lut =
++        _mm_setr_epi8(0x0, 0x4, 0x8, 0xc, 0x1, 0x5, 0x9, 0xd,
++                      0x2, 0x6, 0xa, 0xe, 0x3, 0x7, 0xb, 0xf);
++    const __m128i alpha_v = qarma_unpack_u64(0xC0AC29B7C97C50DDull);
++    const int iterations = isqarma3 ? 2 : 4;
++    uint64_t key0 = key.hi, key1 = key.lo;
++    uint64_t modk0 = (key0 << 63) | ((key0 >> 1) ^ (key0 >> 63));
++    __m128i key0_v = qarma_unpack_u64(key0);
++    __m128i key1_v = qarma_unpack_u64(key1);
++    __m128i modk0_v = qarma_unpack_u64(modk0);
++    __m128i t_hist[5];
++    __m128i rc_v[5];
++    __m128i t = qarma_unpack_u64(modifier);
++    __m128i w = qarma_unpack_u64(data ^ key0);
++
++    for (int i = 0; i <= iterations; ++i) {
++        t_hist[i] = t;
++        rc_v[i] = qarma_unpack_u64(RC[i]);
++        w = _mm_xor_si128(w, _mm_xor_si128(_mm_xor_si128(key1_v, t), rc_v[i]));
++        if (i > 0) {
++            w = _mm_shuffle_epi8(w, perm_shuf);
++            w = qarma_simd_mult(w, rot1_lut, rot2_lut);
++        }
++        w = _mm_shuffle_epi8(sbox_fwd, w);
++        t = qarma_simd_tweak_step(t, perm_tweak, lfsr_lut, fb_mask);
++    }
++
++    w = _mm_xor_si128(w, _mm_xor_si128(modk0_v, t));
++    w = _mm_shuffle_epi8(w, perm_shuf);
++    w = qarma_simd_mult(w, rot1_lut, rot2_lut);
++    w = _mm_shuffle_epi8(sbox_fwd, w);
++    w = _mm_shuffle_epi8(w, perm_shuf);
++    w = qarma_simd_mult(w, rot1_lut, rot2_lut);
++    w = _mm_xor_si128(w, key1_v);
++    w = _mm_shuffle_epi8(w, perm_inv);
++    w = _mm_shuffle_epi8(sbox_inv, w);
++    w = qarma_simd_mult(w, rot1_lut, rot2_lut);
++    w = _mm_shuffle_epi8(w, perm_inv);
++    w = _mm_xor_si128(w, _mm_xor_si128(key0_v, t));
++
++    for (int i = 0; i <= iterations; ++i) {
++        int rev = iterations - i;
++        w = _mm_shuffle_epi8(sbox_inv, w);
++        if (i < iterations) {
++            w = qarma_simd_mult(w, rot1_lut, rot2_lut);
++            w = _mm_shuffle_epi8(w, perm_inv);
++        }
++        w = _mm_xor_si128(w, _mm_xor_si128(
++            _mm_xor_si128(key1_v, t_hist[rev]),
++            _mm_xor_si128(rc_v[rev], alpha_v)));
++    }
++
++    w = _mm_xor_si128(w, modk0_v);
++    return qarma_pack_u64(w);
++}
++#endif
++
++static uint64_t qarma_prng_next(uint64_t *state)
++{
++    uint64_t z = (*state += UINT64_C(0x9e3779b97f4a7c15));
++    z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
++    z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
++    return z ^ (z >> 31);
++}
++
++void arm_pauth_qarma_selftest(void)
++{
++    static gsize initialized;
++
++    if (g_once_init_enter(&initialized)) {
++#ifdef ARM_PAUTH_HAVE_X86_SIMD
++        if (__builtin_cpu_supports("ssse3")) {
++            uint64_t seed = UINT64_C(0x6a09e667f3bcc908);
++            for (int mode = 0; mode < 2; mode++) {
++                bool isq3 = (mode == 1);
++                for (int i = 0; i < 1024; i++) {
++                    uint64_t d = (i == 0) ? 0 : (i == 1) ? UINT64_MAX
++                                 : qarma_prng_next(&seed);
++                    uint64_t m = (i == 0) ? 0 : (i == 1) ? UINT64_MAX
++                                 : qarma_prng_next(&seed);
++                    ARMPACKey k = {
++                        .lo = (i == 0) ? 0 : qarma_prng_next(&seed),
++                        .hi = (i == 1) ? UINT64_MAX : qarma_prng_next(&seed),
++                    };
++                    uint64_t ref = qarma_scalar_compute(d, m, k, isq3);
++                    uint64_t got = qarma_ssse3_compute(d, m, k, isq3);
++                    g_assert_cmphex(got, ==, ref);
++                }
++            }
++            arm_pauth_use_ssse3 = true;
++        }
++#endif
++        g_once_init_leave(&initialized, 1);
++    }
++}
++
++uint64_t arm_pauth_computepac_architected_fast(uint64_t data, uint64_t modifier,
++                                               ARMPACKey key, bool isqarma3)
++{
++#ifdef ARM_PAUTH_HAVE_X86_SIMD
++    if (likely(arm_pauth_use_ssse3)) {
++        return qarma_ssse3_compute(data, modifier, key, isqarma3);
++    }
++#endif
++    return qarma_scalar_compute(data, modifier, key, isqarma3);
++}
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -287,7 +287,15 @@
+         }
+     }
+ 
++#ifdef COMPILING_PER_TARGET
++    if (0) {
++        return pauth_computepac_architected(data, modifier, key, algorithm == 3);
++    }
++    result = arm_pauth_computepac_architected_fast(data, modifier, key,
++                                                   algorithm == 3);
++#else
+     result = pauth_computepac_architected(data, modifier, key, algorithm == 3);
++#endif
+     if (entry) {
+         *entry = (ARMPAuthMemoEntry) {
+             .data = data, .modifier = modifier, .key = key, .result = result,

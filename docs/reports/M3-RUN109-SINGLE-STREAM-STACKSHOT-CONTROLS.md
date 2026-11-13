@@ -41,8 +41,8 @@ Corrected root-owned controls then produced final reports with
 
 | Control | Actual sampling window, UTC | Retained target stacks | Result |
 |---|---|---|---|
-| Stable `r109spin2` | 00:23:12.812–00:23:15.810 on November 7 | sleep1173: 30 samples, requested 3 s / 100 ms | exit 0, complete report |
-| Early exit `r109early` | 00:27:20.275–00:27:30.276 on November 7 | long sleep1378: 83; short sleep1380: 57 | exit 0, complete report |
+| Stable `r109spin2` | 00:23:12.812–00:23:15.810 on November 7 | sleep 1173: 30 samples, requested 3 s / 100 ms | exit 0, complete report |
+| Early exit `r109early` | 00:27:20.275–00:27:30.276 on November 7 | long sleep 1378: 83; short sleep 1380: 57 | exit 0, complete report |
 
 The short child was `/bin/sleep 6` and exited naturally with status 0.
 Its report ends at 00:27:25.881 UTC, inside the ten-second sampling window;

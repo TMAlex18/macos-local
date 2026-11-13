@@ -45,7 +45,7 @@ A baseline failure is expected and recorded, not relabeled as a pass.
 - Guest descriptor: 16-byte address/length/next/flags record. Only the first
   descriptor is supported; no scatter/gather/descriptor chaining promise.
 - Completion and reconnect behavior are this research profile's tested
-  contract; they are not claimed as a verified macOS27 booter ABI.
+  contract; they are not claimed as a verified macOS 27 booter ABI.
 - Full malformed stream lengths close the peer; a complete packet exceeding
   the current guest RX buffer is discarded while the next valid frame can
   proceed. Disconnect clears partial frame state.
@@ -83,9 +83,9 @@ Full evidence is under runs/e05-bdif-usb and summarized in
 
 ## Original-ROM teardown regression
 
-The suite now has17 cases. `queue-control` verifies observed USB 0x404
+The suite now has 17 cases. `queue-control` verifies observed USB 0x404
 startup/readback, disable, rejection of disabled TX, clearing stale RX,
-reenable and actual transfer. Oldbinary fails; patchedbinary passes.
+reenable and actual transfer. Old binary fails; patched binary passes.
 Source delta: patches/qemu-platform/0008-bdif-usb-queue-control.patch.
 Backpressure harness startup and pressure deadlines are separate (15s and
 250ms), with phase and per-run labels for interpreting a failed startup.

@@ -1,0 +1,164 @@
+From: macos-local research
+Subject: [PATCH] Selective CF_PCREL TB jump-cache invalidation and 256 page buckets
+
+Expand CPUJumpCache from 4,096 to 16,384 entries while keeping 64 slots
+per page (256 page buckets), fold high virtual page bits in the page hash,
+and restrict intra-page offset hashing strictly to ~TARGET_PAGE_MASK.
+Under CF_PCREL, tb_jmp_cache_inval_tb() now probes only the invariant
+intra-page offset slot in each page bucket with read-before-write instead
+of wiping every vCPU jump cache.
+
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -158,7 +158,9 @@
+ 
+     i0 = tb_jmp_cache_hash_page(page_addr);
+     for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
+-        qatomic_set(&jc->array[i0 + i].tb, NULL);
++        if (qatomic_read(&jc->array[i0 + i].tb) != NULL) {
++            qatomic_set(&jc->array[i0 + i].tb, NULL);
++        }
+     }
+ }
+ 
+@@ -391,7 +393,9 @@
+ 
+     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+ 
+-    tcg_flush_jmp_cache(cpu);
++    if (to_clean) {
++        tcg_flush_jmp_cache(cpu);
++    }
+ 
+     if (to_clean == ALL_MMUIDX_BITS) {
+         qatomic_set(&cpu->neg.tlb.c.full_flush_count,
+@@ -744,7 +748,7 @@
+      * If the length is larger than the jump cache size, then it will take
+      * longer to clear each entry individually than it will to clear it all.
+      */
+-    if (d.len >= (TARGET_PAGE_SIZE * TB_JMP_CACHE_SIZE)) {
++    if (d.len >= (TARGET_PAGE_SIZE * (TB_JMP_CACHE_SIZE / TB_JMP_PAGE_SIZE))) {
+         tcg_flush_jmp_cache(cpu);
+         return;
+     }
+diff --git a/accel/tcg/tb-hash.h b/accel/tcg/tb-hash.h
+--- a/accel/tcg/tb-hash.h
++++ b/accel/tcg/tb-hash.h
+@@ -31,24 +31,27 @@
+ /* Only the bottom TB_JMP_PAGE_BITS of the jump cache hash bits vary for
+    addresses on the same page.  The top bits are the same.  This allows
+    TLB invalidation to quickly clear a subset of the hash table.  */
+-#define TB_JMP_PAGE_BITS (TB_JMP_CACHE_BITS / 2)
++#define TB_JMP_PAGE_BITS 6
+ #define TB_JMP_PAGE_SIZE (1 << TB_JMP_PAGE_BITS)
+ #define TB_JMP_ADDR_MASK (TB_JMP_PAGE_SIZE - 1)
+ #define TB_JMP_PAGE_MASK (TB_JMP_CACHE_SIZE - TB_JMP_PAGE_SIZE)
+ 
+ static inline unsigned int tb_jmp_cache_hash_page(vaddr pc)
+ {
+-    vaddr tmp;
+-    tmp = pc ^ (pc >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS));
+-    return (tmp >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS)) & TB_JMP_PAGE_MASK;
++    vaddr vpn = pc >> TARGET_PAGE_BITS;
++    return ((vpn ^ (vpn >> 8) ^ (vpn >> 16)) << TB_JMP_PAGE_BITS)
++           & TB_JMP_PAGE_MASK;
++}
++
++static inline unsigned int tb_jmp_cache_hash_offset(vaddr pc)
++{
++    vaddr ofs = pc & ~TARGET_PAGE_MASK;
++    return ((ofs >> 2) ^ (ofs >> 8) ^ ofs) & TB_JMP_ADDR_MASK;
+ }
+ 
+ static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
+ {
+-    vaddr tmp;
+-    tmp = pc ^ (pc >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS));
+-    return (((tmp >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS)) & TB_JMP_PAGE_MASK)
+-           | (tmp & TB_JMP_ADDR_MASK));
++    return tb_jmp_cache_hash_page(pc) | tb_jmp_cache_hash_offset(pc);
+ }
+ 
+ #else
+diff --git a/accel/tcg/tb-jmp-cache.h b/accel/tcg/tb-jmp-cache.h
+--- a/accel/tcg/tb-jmp-cache.h
++++ b/accel/tcg/tb-jmp-cache.h
+@@ -12,7 +12,7 @@
+ #include "qemu/rcu.h"
+ #include "exec/cpu-common.h"
+ 
+-#define TB_JMP_CACHE_BITS 12
++#define TB_JMP_CACHE_BITS 14
+ #define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
+ 
+ /*
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -898,9 +898,39 @@
+     CPUState *cpu;
+ 
+     if (tb_cflags(tb) & CF_PCREL) {
+-        /* A TB may be at any virtual address */
++#ifdef CONFIG_SOFTMMU
++        tb_page_addr_t phys_pc = tb_page_addr0(tb);
++        if (likely(phys_pc != -1)) {
++            unsigned int ofs = tb_jmp_cache_hash_offset(phys_pc);
++
++            CPU_FOREACH(cpu) {
++                CPUJumpCache *jc = cpu->tb_jmp_cache;
++
++                if (unlikely(!jc)) {
++                    continue;
++                }
++                for (unsigned int p = 0; p < TB_JMP_CACHE_SIZE;
++                     p += TB_JMP_PAGE_SIZE) {
++                    if (unlikely(qatomic_read(&jc->array[p + ofs].tb) == tb)) {
++                        qatomic_set(&jc->array[p + ofs].tb, NULL);
++                    }
++                }
++            }
++            return;
++        }
++#endif
++        /* Unmapped or user-mode CF_PCREL TB: clear only matching entries */
+         CPU_FOREACH(cpu) {
+-            tcg_flush_jmp_cache(cpu);
++            CPUJumpCache *jc = cpu->tb_jmp_cache;
++
++            if (unlikely(!jc)) {
++                continue;
++            }
++            for (unsigned int i = 0; i < TB_JMP_CACHE_SIZE; i++) {
++                if (unlikely(qatomic_read(&jc->array[i].tb) == tb)) {
++                    qatomic_set(&jc->array[i].tb, NULL);
++                }
++            }
+         }
+     } else {
+         uint32_t h = tb_jmp_cache_hash_func(tb->pc);
+@@ -908,7 +938,7 @@
+         CPU_FOREACH(cpu) {
+             CPUJumpCache *jc = cpu->tb_jmp_cache;
+ 
+-            if (qatomic_read(&jc->array[h].tb) == tb) {
++            if (jc && unlikely(qatomic_read(&jc->array[h].tb) == tb)) {
+                 qatomic_set(&jc->array[h].tb, NULL);
+             }
+         }
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -633,6 +633,8 @@
+     }
+ 
+     for (int i = 0; i < TB_JMP_CACHE_SIZE; i++) {
+-        qatomic_set(&jc->array[i].tb, NULL);
+-    }
+-}
++        if (qatomic_read(&jc->array[i].tb) != NULL) {
++            qatomic_set(&jc->array[i].tb, NULL);
++        }
++    }
++}

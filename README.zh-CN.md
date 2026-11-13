@@ -21,12 +21,14 @@
   - run-64 验证文件跨冷启动持久化保留，以及通过 Apple 菜单正常关机并使 QEMU 正常退出；
   - run-65 验证客体 `curl` HTTPS 访问、Safari 本地与远程网页浏览，以及 TextEdit 编辑保存。
 - **后续进展（Runs 70–128）：** NVIDIA 与 Intel 双 GPU 原生窗口像素呈现、自动 DHCP 与 HTTP 文件服务、VirtIO 声卡绑定为 CoreAudio 默认输出设备（部分轮次实现逐字节一致的 PCM 输出），以及固定 WebGL2 着色器两份原始像素读回与独立参考实现逐字节一致。
-- **最近一次有新功能结论的运行：** Run128 在真实 macOS Safari 中渲染固定 WebGL2 着色器，两份 96×64 RGBA8 读回（各 24,576 字节）与独立参考逐字节一致。在显式开启的 30 秒超时诊断下，Safari 首个 GPU 连接在 UI 请求后 3.781 秒完成初始化，未触发 GPU 看门狗。这不代表通过了 WebKit 原始的 3 秒期限：诊断的第二处代码点未命中，且仍有两次 WebProcess 无响应通知。客体自行关机，但文件系统干净卸载尚未证明。
+- **最近有新功能结论的运行：** [Run149 与 Run150](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.md) 在 `0033–0045` 同步与执行吞吐优化构建上**完全关闭 30 秒超时诊断**（原版未修改 WebKit 看门狗行为）：
+  - **安静客体（Run149，`+976 s`）**：开机后第一次冷启动 Safari 以 **`2.734 秒`（0 次 GPU 看门狗退出——首次不依赖任何 UIProcess 主循环投递裕量即正面跌破 `3.000 秒` 硬期限）**完成初始化，两份 96×64 RGBA8 固定 WebGL2 读回（各 24,576 字节）逐字节一致，二次无干扰启动耗时 **`1.679 秒`**。
+  - **后台峰值负载窗口（Run150，不等待安静直接在 `+720 s`、`vcpu_mean_busy = 6.32` 触发）**：开机后第一次冷启动 Safari 同样以 **0 次 GPU 看门狗退出**一次完成初始化（日志跨度 `3.254 秒`，处于原版 UIProcess 运行循环投递裕量内），两份 WebGL2 读回逐字节一致（跨 5 轮独立无诊断冷启动 **5/5** 通过；Run148–150 连续 **8/8 次**无诊断新鲜启动全部 0 看门狗通过；`+1020 s` 二次启动 **`1.662 秒`**）。两轮均由客体内部正常关机，文件系统干净卸载尚未证明。
 - **近期工作（2026-11-10 起）：**
-  Runs 130–142 在 30 秒超时诊断下测量了 Safari 首个 GPU 连接的初始化耗时。开机后首次启动耗时 3.4–3.8 秒，同一次开机内第二次启动耗时 2.8–3.4 秒；更换 [PAC 算法](docs/reports/M3-PAC-ALGORITHM-GPU-INIT-TIMING.md) 与扩容 [客体内存至 8 GiB](docs/reports/M3-RAM-SIZE-GPU-INIT-TIMING.md) 均未显著改变该耗时。[宿主侧线程采样](docs/reports/M3-GPU-INIT-HOST-CPU-USE.md) 显示登录后约 20 分钟内全部 8 个 vCPU 一直被后台任务占满；[等后台负载消退后再测试](docs/reports/M3-QUIET-GUEST-GPU-INIT-TIMING.md)，首次与二次启动分别为 3.25 秒与 2.59 秒——因为启动 Safari 本身就会占满全部 vCPU。当客体繁忙时，vCPU 线程有 14%–30% 的时间阻塞在 QEMU 全局锁（`bql`）和全核暂停独占段（`start_exclusive`）上。下一步是按触发源细化统计这些锁等待并对占比最高的路径做补丁优化，以及在当前主线二进制上重跑一次原生还原。
-  当前主线二进制为 `build/qemu-bdif-usb/qemu-system-aarch64`，SHA-256 `4a433616dc04e90ba41d720fe0dfb8925294799eff94a6eef24b52108a6b4d66`，补丁链记录至 `0032`；详见 构建记录 与 [当前状态](docs/STATUS.md)。
+  Runs 130–142 将 Safari GPU 初始化延迟定位到客体饱和与 14%–30% 的 QEMU 锁等待（[PAC 算法](docs/reports/M3-PAC-ALGORITHM-GPU-INIT-TIMING.md)、[客体内存](docs/reports/M3-RAM-SIZE-GPU-INIT-TIMING.md)、[宿主线程采样](docs/reports/M3-GPU-INIT-HOST-CPU-USE.md)、[安静客体](docs/reports/M3-QUIET-GUEST-GPU-INIT-TIMING.md)）。Runs 143–146（[同步触发源报告](docs/reports/M3-QEMU-SYNC-SOURCES.md)）用每核无锁计数（`0033`）查清触发源并合入六项补丁（`0034–0039`），使饱和期 `bql` 获取率下降 90%、vCPU 运行或可运行占比升至 **96.6%**（总阻塞仅 3.4%）。Runs 147–150（[执行吞吐报告](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.md)）用 `perf` 剖析剩余 80%–81% 的 C helper 热点并合入六项纯执行吞吐补丁（`0040–0045`：`CF_PCREL` 跳转缓存先读后写失效与 256 页桶、常规 16 KiB 子页精确失效与无 EL2 内联快路径、PAuth VA 缓存与 SSSE3 `pshufb` QARMA5、SME `do_fmopa_h` 预拆包、宿主 RAM 地址标记的跨进程持久 `CPUJumpCache`、`TTBR0_EL1` 切换保留 `Phys_NS` 与 `TTBR1` 内核高半区 TLB），将饱和期客体翻译块 `[JIT]` 占比提升 **78.4%**（`13.52% → 24.12%`），使安静客体无诊断首次冷启动严格破 `3.000 s`（`2.734 s`）且 `+720 s` 峰值期无诊断首次冷启动 0 看门狗通过（`3.254 s`）。下一步是在当前 `0045` 主线二进制上重跑一次原生还原（需 root）并拓展更多应用与 Metal 覆盖验证。
+  当前主线二进制为 `build/qemu-bdif-usb/qemu-system-aarch64`，SHA-256 `f858a94a8d7395456679a9c05c2c0dd2d6ee56f8701525e47bbf7ed9ee85f474`，补丁链记录至 `0045`；详见 构建记录 与 [当前状态](docs/STATUS.md)。
 - **主要未决问题**（证据与逐轮运行表见 [RESULTS 第 2 节](docs/RESULTS.md)）：
-  - *Safari 首次加载：* 在 TCG 下全新 GPU 进程赶不上 WebKit 的 3 秒看门狗；stackshot 显示此时主线程在等待尚处于启动过程中的音频 `SandboxHelper`。调整内存容量、PAC memo 等多项对照均未消除超时，目前仅靠默认关闭的 30 秒超时诊断跨过该期限（Runs 127–128）。
+  - *峰值负载期标称 `< 3.000 秒` 裕量：* 安静客体已在 Run149 无诊断下严格跌破 `3.000 秒`（`2.734 秒`），`+720 s` 后台峰值窗口也在 Run150 无诊断下 0 看门狗一次通过（`3.254 秒`，2 次 WebProcess 通知），但峰值期日志跨度仍依赖原版 UIProcess 运行循环约 `0.26 秒` 的投递裕量。
   - *音频：* PCM 输出在部分轮次完整无损，在另一些轮次出现缺帧（零块替代），根因未定。
   - *宿主侧：* 运行期间曾出现过 Vulkan `DeviceLost`、一次宿主 i915 GPU 挂起以及两次意外宿主重启。
 - **尚未验证：** 文件系统干净关机证明、更广泛的应用与 Metal 覆盖、物理输入/呈现延迟以及 M5–M7 性能指标。
@@ -89,6 +91,7 @@
 | `el0-migration-tests`、`el0-migration-extended` | E06 两种 TCG 模式下的双 vCPU EL0 跨核迁移 |
 | `pauth-baseline`、`pauth-model`、`pauth-model-impdef`、`pauth-guards` | E06 PAC 基线与默认关闭的 HVC 软件模型 |
 | `pauth-cost-bench` | E06 `PACIBSP`/`RETAB` 单次 TCG 模拟开销微基准 |
+| `sync-counter-tests` | E06 每 vCPU 的 TCG 全局锁与独占段触发源计数测试（`0033`） |
 | `clock-math`、`clock-functional`、`clock-rate-exact`、`clock-check`、`clock-rate-baseline` | E06 24 MHz 时钟契约测试 |
 | `bdif-usb-tests`、`bdif-usb-backpressure`、`bdif-usb-control`、`bdif-block-tests` | E05 自写客体下的 BDIF USB 与块传输测试 |
 | `config-mailbox-tests`、`avp-rtc-tests`、`ctrr-contract-tests`、`ctrr-qemu-guest-tests`、`virtio-usb-tests` | E05 配置邮箱、AVP RTC、CTRR 与 VirtIO USB 自写客体契约 |

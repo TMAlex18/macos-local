@@ -1,4 +1,4 @@
-# M3 Safari GPU takeover — Runs81–82
+# M3 Safari GPU takeover — Runs 81–82
 
 **Run:** `m3-safari-gpu-takeover-20261102-81`  
 **Window:** 2026-11-02 19:14:25–19:28:23 UTC  
@@ -8,7 +8,7 @@
 
 - 8 vCPUs, QEMU TCG, USB keyboard/tablet input.
 - user-mode NAT requested (`virtio-net-pci`); guest connectivity remained unverified.
-- `native_window=false`, no explicit GPU/ICD, and no `exact_half_blend`; no FramebufferFetch fatal was observed on this path. Native-window failures were observed in takeover Runs73–75/77; Run76 was a no-native-window control.
+- `native_window=false`, no explicit GPU/ICD, and no `exact_half_blend`; no FramebufferFetch fatal was observed on this path. Native-window failures were observed in takeover Runs 73–75/77; Run76 was a no-native-window control.
 - Interactive observation; host QMP quit used after evidence capture.
 
 ## Result
@@ -23,7 +23,7 @@
 
 ## Interpretation
 
-This closes the previous login blocker and proves that the no-native-window path can boot the installed system, accept authenticated GUI input, launch Safari, and keep the Safari window alive long enough for address-bar interaction. It does not establish that the native-window path is fixed: takeover Runs73–75/77 aborted in the Reims/metal2vulkan FramebufferFetch pipeline path on the older build.
+This closes the previous login blocker and proves that the no-native-window path can boot the installed system, accept authenticated GUI input, launch Safari, and keep the Safari window alive long enough for address-bar interaction. It does not establish that the native-window path is fixed: takeover Runs 73–75/77 aborted in the Reims/metal2vulkan FramebufferFetch pipeline path on the older build.
 
 The attempted `https://www.iana.org/` navigation displayed Safari's “Failed to open page” state. The run metadata records network connectivity as unknown, so this is evidence of a failed guest page load, not a diagnosis of DNS, DHCP, HTTPS, or Safari networking.
 

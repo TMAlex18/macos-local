@@ -183,7 +183,7 @@
     "one outstanding transport descriptor, no descriptor chain",
     "sequential EP0 only, no USBIP UNLINK/DEVLIST/ISO",
     "mid-stream reset/peer generation and migration unqualified",
-    "wire ABI derived from older prototype, not verified for macOS27"
+    "wire ABI derived from older prototype, not verified for macOS 27"
   ],
   "documentation": "docs/reports/M1-BDIF-USB-TRANSPORT.md"
 }

@@ -1,0 +1,297 @@
+From: macos-local research
+Subject: [PATCH] Host-RAM-tagged persistent CPUJumpCache across TLB invalidations
+
+Record host_pc in CPUJumpCache for single-page RAM TBs and validate
+hits in tb_lookup() against the active SoftMMU code TLB (or via
+get_page_addr_code_hostp() on context-switch code-TLB refills, bypassing
+global qht_lookup_custom). TLB invalidations no longer clear CPUJumpCache.
+
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -47,7 +47,9 @@
+ #include "tb-internal.h"
+ #include "internal-common.h"
+ #if !defined(CONFIG_USER_ONLY)
++#include "accel/tcg/cpu-mmu-index.h"
+ #include "accel/tcg/iommu.h"
++#include "exec/tlb-common.h"
+ #endif
+ 
+ /* -icount align implementation. */
+@@ -195,6 +197,7 @@
+     return false;
+ }
+ 
++#ifdef CONFIG_USER_ONLY
+ static TranslationBlock *tb_htable_lookup(CPUState *cpu, const TCGTBCPUState *s)
+ {
+     tb_page_addr_t phys_pc;
+@@ -212,6 +215,36 @@
+                      s->flags, s->cs_base, s->cflags);
+     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+ }
++#else
++static inline bool tb_jmp_cache_code_host_match(CPUState *cpu, vaddr pc,
++                                                uintptr_t expected_host_pc)
++{
++    int mmu_idx = cpu_mmu_index(cpu, true);
++    CPUTLBDescFast *fast = cpu_tlb_fast(cpu, mmu_idx);
++    uintptr_t idx = (pc >> TARGET_PAGE_BITS) &
++                    (fast->mask >> CPU_TLB_ENTRY_BITS);
++    const CPUTLBEntry *entry = &fast->table[idx];
++    uintptr_t tlb_code = qatomic_read(&entry->addr_code);
++
++    return likely(tlb_code == (pc & TARGET_PAGE_MASK)) &&
++           likely(((uintptr_t)pc + entry->addend) == expected_host_pc);
++}
++
++static TranslationBlock *tb_htable_lookup_phys(CPUState *cpu,
++                                               const TCGTBCPUState *s,
++                                               tb_page_addr_t phys_pc)
++{
++    struct tb_desc desc;
++    uint32_t h;
++
++    desc.s = *s;
++    desc.env = cpu_env(cpu);
++    desc.page_addr0 = phys_pc;
++    h = tb_hash_func(phys_pc, (s->cflags & CF_PCREL ? 0 : s->pc),
++                     s->flags, s->cs_base, s->cflags);
++    return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
++}
++#endif
+ 
+ /**
+  * tb_lookup:
+@@ -236,6 +269,7 @@
+     hash = tb_jmp_cache_hash_func(s->pc);
+     jc = cpu->tb_jmp_cache;
+ 
++#ifdef CONFIG_USER_ONLY
+     tb = qatomic_read(&jc->array[hash].tb);
+     if (likely(tb &&
+                jc->array[hash].pc == s->pc &&
+@@ -252,6 +286,54 @@
+ 
+     jc->array[hash].pc = s->pc;
+     qatomic_set(&jc->array[hash].tb, tb);
++#else
++    void *host_pc = NULL;
++    tb_page_addr_t phys_pc;
++
++    tb = qatomic_read(&jc->array[hash].tb);
++    if (likely(tb &&
++               jc->array[hash].pc == s->pc &&
++               tb->cs_base == s->cs_base &&
++               tb->flags == s->flags &&
++               tb_cflags(tb) == s->cflags)) {
++        if (likely(jc->array[hash].host_pc != 0 &&
++                   tb_jmp_cache_code_host_match(cpu, s->pc,
++                                                jc->array[hash].host_pc))) {
++            goto hit;
++        }
++        phys_pc = get_page_addr_code_hostp(cpu_env(cpu), s->pc, &host_pc);
++        if (unlikely(phys_pc == -1)) {
++            return NULL;
++        }
++        tb = qatomic_read(&jc->array[hash].tb);
++        if (likely(tb &&
++                   jc->array[hash].pc == s->pc &&
++                   tb->cs_base == s->cs_base &&
++                   tb->flags == s->flags &&
++                   tb_cflags(tb) == s->cflags &&
++                   tb_page_addr1(tb) == -1 &&
++                   tb_page_addr0(tb) == phys_pc)) {
++            jc->array[hash].host_pc = (uintptr_t)host_pc;
++            goto hit;
++        }
++    } else {
++        phys_pc = get_page_addr_code_hostp(cpu_env(cpu), s->pc, &host_pc);
++        if (unlikely(phys_pc == -1)) {
++            return NULL;
++        }
++    }
++
++    tb = tb_htable_lookup_phys(cpu, s, phys_pc);
++    if (tb == NULL) {
++        return NULL;
++    }
++
++    if (likely(tb_page_addr1(tb) == -1 && host_pc != NULL)) {
++        jc->array[hash].pc = s->pc;
++        jc->array[hash].host_pc = (uintptr_t)host_pc;
++        qatomic_set(&jc->array[hash].tb, tb);
++    }
++#endif
+ 
+ hit:
+     /*
+@@ -995,10 +1077,21 @@
+                  * We add the TB in the virtual pc hash table
+                  * for the fast lookup
+                  */
++#ifdef CONFIG_USER_ONLY
+                 h = tb_jmp_cache_hash_func(s.pc);
+                 jc = cpu->tb_jmp_cache;
+                 jc->array[h].pc = s.pc;
+                 qatomic_set(&jc->array[h].tb, tb);
++#else
++                if (likely(tb_page_addr1(tb) == -1 &&
++                           tb_page_addr0(tb) != -1)) {
++                    h = tb_jmp_cache_hash_func(s.pc);
++                    jc = cpu->tb_jmp_cache;
++                    jc->array[h].pc = s.pc;
++                    jc->array[h].host_pc = 0;
++                    qatomic_set(&jc->array[h].tb, tb);
++                }
++#endif
+             }
+ 
+ #ifndef CONFIG_USER_ONLY
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -147,23 +147,6 @@
+     desc->window_max_entries = max_entries;
+ }
+ 
+-static void tb_jmp_cache_clear_page(CPUState *cpu, vaddr page_addr)
+-{
+-    CPUJumpCache *jc = cpu->tb_jmp_cache;
+-    int i, i0;
+-
+-    if (unlikely(!jc)) {
+-        return;
+-    }
+-
+-    i0 = tb_jmp_cache_hash_page(page_addr);
+-    for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
+-        if (qatomic_read(&jc->array[i0 + i].tb) != NULL) {
+-            qatomic_set(&jc->array[i0 + i].tb, NULL);
+-        }
+-    }
+-}
+-
+ /**
+  * tlb_mmu_resize_locked() - perform TLB resize bookkeeping; resize if necessary
+  * @desc: The CPUTLBDesc portion of the TLB
+@@ -393,10 +376,6 @@
+     }
+ 
+     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+-
+-    if (to_clean) {
+-        tcg_flush_jmp_cache(cpu);
+-    }
+ 
+     if (to_clean == ALL_MMUIDX_BITS) {
+         qatomic_set(&cpu->neg.tlb.c.full_flush_count,
+@@ -549,7 +528,6 @@
+                                              MMUIdxMap idxmap)
+ {
+     int mmu_idx;
+-    bool had_16k = false;
+ 
+     assert_cpu_is_self(cpu);
+ 
+@@ -558,27 +536,10 @@
+     qemu_spin_lock(&cpu->neg.tlb.c.lock);
+     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+         if ((idxmap >> mmu_idx) & 1) {
+-            if (cpu->neg.tlb.d[mmu_idx].has_16k_pages) {
+-                had_16k = true;
+-            }
+             tlb_flush_page_locked(cpu, mmu_idx, addr);
+         }
+     }
+     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+-
+-    /*
+-     * Discard jump cache entries for any tb which might potentially
+-     * overlap the flushed page, which includes the previous.
+-     */
+-    if (had_16k) {
+-        vaddr base = addr & ~(vaddr)0x3fff;
+-        for (vaddr ofs = 0; ofs <= 0x4000; ofs += TARGET_PAGE_SIZE) {
+-            tb_jmp_cache_clear_page(cpu, base - TARGET_PAGE_SIZE + ofs);
+-        }
+-    } else {
+-        tb_jmp_cache_clear_page(cpu, addr - TARGET_PAGE_SIZE);
+-        tb_jmp_cache_clear_page(cpu, addr);
+-    }
+ }
+ 
+ /**
+@@ -759,7 +720,6 @@
+                                               TLBFlushRangeData d)
+ {
+     int mmu_idx;
+-    bool had_16k = false;
+ 
+     assert_cpu_is_self(cpu);
+ 
+@@ -769,38 +729,10 @@
+     qemu_spin_lock(&cpu->neg.tlb.c.lock);
+     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+         if ((d.idxmap >> mmu_idx) & 1) {
+-            if (cpu->neg.tlb.d[mmu_idx].has_16k_pages) {
+-                had_16k = true;
+-            }
+             tlb_flush_range_locked(cpu, mmu_idx, d.addr, d.len, d.bits);
+         }
+     }
+     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+-
+-    if (had_16k) {
+-        vaddr aligned = d.addr & ~(vaddr)0x3fff;
+-        d.len = QEMU_ALIGN_UP((d.addr - aligned) + d.len, 0x4000);
+-        d.addr = aligned;
+-    }
+-
+-    /*
+-     * If the length is larger than the jump cache size, then it will take
+-     * longer to clear each entry individually than it will to clear it all.
+-     */
+-    if (d.len >= (TARGET_PAGE_SIZE * (TB_JMP_CACHE_SIZE / TB_JMP_PAGE_SIZE))) {
+-        tcg_flush_jmp_cache(cpu);
+-        return;
+-    }
+-
+-    /*
+-     * Discard jump cache entries for any tb which might potentially
+-     * overlap the flushed pages, which includes the previous.
+-     */
+-    d.addr -= TARGET_PAGE_SIZE;
+-    for (vaddr i = 0, n = d.len / TARGET_PAGE_SIZE + 1; i < n; i++) {
+-        tb_jmp_cache_clear_page(cpu, d.addr);
+-        d.addr += TARGET_PAGE_SIZE;
+-    }
+ }
+ 
+ static void tlb_flush_range_by_mmuidx_async_1(CPUState *cpu,
+diff --git a/accel/tcg/tb-jmp-cache.h b/accel/tcg/tb-jmp-cache.h
+--- a/accel/tcg/tb-jmp-cache.h
++++ b/accel/tcg/tb-jmp-cache.h
+@@ -27,6 +27,7 @@
+     struct {
+         TranslationBlock *tb;
+         vaddr pc;
++        uintptr_t host_pc;
+     } array[TB_JMP_CACHE_SIZE];
+ } CPUJumpCache;
+ 
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -635,6 +635,7 @@
+     for (int i = 0; i < TB_JMP_CACHE_SIZE; i++) {
+         if (qatomic_read(&jc->array[i].tb) != NULL) {
+             qatomic_set(&jc->array[i].tb, NULL);
+-        }
+-    }
+-}
++            jc->array[i].host_pc = 0;
++        }
++    }
++}

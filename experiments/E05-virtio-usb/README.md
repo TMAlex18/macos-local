@@ -53,7 +53,7 @@ descriptor及长度生成响应。当前所核对的IN分支没有用host length
 `0xfffffe0008a94394–43d0`和`startNonIsocEndpoint`
 `0xfffffe0008a8f350–f3cc`。
 
-EP0有独立规则：type1/endpoint0进入控制处理，type1/endpoint`0x80`请求被拒；
+EP0有独立规则：type1/endpoint0进入控制处理，type1 / endpoint `0x80` 请求被拒；
 guest的EP0 IN由`startEp0In`主动产生，响应第二字节是0，且可产生零payload
 响应（`0xfffffe0008a8f190–f218`）。`handleSetupRequest`读取前8B setup，
 内部状态5/6分支检查`8+wLength≤payload长度`后复制`payload+8`
@@ -135,9 +135,9 @@ guest内以counter限定等待，host timeout永远失败。配置4GiB/2CPU/24MH
 
 1. Q0预投6B header与独立大payload可写SG；host将4B外层前缀分成1/1/2B并
    分裂body。guest独立核对type1/ep4、48B fixture及整个header/payload
-   allocation的canary，验证真实DMA及used length54、IRQ67。
+   allocation的canary，验证真实DMA及used length 54、IRQ67。
 2. guest计算64B fixture response，用2B头及独立payload只读SG提交Q1；host
-   逐字节核对原始wire，guest等待used length0及IRQ后检查输入/guard未变。
+   逐字节核对原始wire，guest等待used length 0及IRQ后检查输入/guard未变。
 3. 再投Q0/Q1，使用17B请求和113B响应，重复数据/used/ISR及guard检查，验证
    正常确认和再用，不假定一命令必须一中断。
 4. guest提交512KiB非恒定payload响应。host在此阶段2秒不读取socket，guest
@@ -149,7 +149,7 @@ guest内以counter限定等待，host timeout永远失败。配置4GiB/2CPU/24MH
 当前runner还使用production
 `capture_virtio_devices(..., allow_usb=True)`进行实际只读QMP诊断：以`-S`
 开始，先在reset/prelaunch停止状态查询；继续guest至DRIVER_OK且尚未发送
-fixture请求时，再查询一次。两阶段都要求USB内部device-id`0x100`、完整的
+fixture请求时，再查询一次。两阶段都要求USB内部device-id `0x100`、完整的
 host/guest/backend features对象、两条queue及查询后QEMU存活。reset的desc/used
 应为0，DRIVER_OK应有真实desc且协商VERSION_1。这个内部ID不等于PCI device
 `0x1a01`。完整原始QMP回复在每个新run的`qmp.json`，没有读取guest MMIO或ISR。
@@ -173,10 +173,10 @@ fixture SHA-256为
 
 guest实际探测BAR1=`0x51000000/4KiB`、BAR4=`0x51004000/16KiB`，common=
 `0x51004000`、ISR=`0x51005000`、notify=`0x51007000`；device features为
-low`0x30000000`/high`1`，仅协商VERSION_1。QMP启动快照确认slot3设备ID，
+low `0x30000000` / high `1`，仅协商VERSION_1。QMP启动快照确认slot3设备ID，
 其中尚未映射的BAR是guest配置前状态，不能用来否定其后UART记录的DMA执行。
 
-Q0 used依次为`(index1,len54)`、`(index2,len23)`，Q1 used为index1/2/3、
+Q0 used依次为`(index 1, len 54)`、`(index 2, len 23)`，Q1 used为index 1/2/3、
 length均0。五次完成均由实际IAR67、ISR bitmap1确认；config IRQ计数0。
 两轮请求的实际DMA/SG/guard和响应完整字节、readonly buffer检查均通过。
 大响应原始wire
@@ -217,7 +217,7 @@ unknown；没有改变设备数据路径。
 一次更新正例
 直接通过，原df44版本正负两结果原样保留，Q0-small负例未重跑。自制guest固件
 仍为相同`2c8030…acab`。实际production查询在reset/prelaunch及DRIVER_OK两阶段
-均返回device-id256、三组features对象与queue0/1，dev-features为空，host仅
+均返回device-id 256、三组features对象与queue0/1，dev-features为空，host仅
 INDIRECT_DESC/EVENT_IDX/VERSION_1，guest仅VERSION_1，backend为空。
 reset两queue的desc/used为0；运行后两desc非零，DRIVER_OK成立；前后query-status
 均响应、QEMU存活，无断言。原始回复见QMP记录。
@@ -233,7 +233,7 @@ reset两queue的desc/used为0；运行后两desc非零，DRIVER_OK成立；前�
 真实EL0，具体进程未知。没有命中goOnBus()；末期USB仅ACKNOWLEDGE，两个
 queue的desc/used为零，正常reset未获得wire响应，status=-110。故未发送
 EP0请求，也没有USB枚举/restored服务证明。内核观察passed=true，runner因
-USB探针退出5；QEMU quit0/reap和原AUX/root保留均成立。
+USB探针退出5；QEMU quit 0 / reap和原AUX/root保留均成立。
 实际运行与探针、
 保留状态。
 
@@ -245,6 +245,6 @@ USB探针退出5；QEMU quit0/reap和原AUX/root保留均成立。
 窗口内记录createUSBDevice调用前description为NULL（490.716秒），独立返回
 位置W0为0xe00002c2（490.967秒）；没有receiver/thread/SP配对。正常
 SetDeviceDescription、startUSBStack和goOnBus未命中，reset仍无帧、未发EP0。
-同run893.598秒稳定EL0成立，QEMU quit0/reap及目标保留通过。该结果把下一项
+同 run 893.598 秒稳定EL0成立，QEMU quit 0 / reap及目标保留通过。该结果把下一项
 定位放在普通用户态执行位置和描述提交之前，不证明服务从未执行或特性协商
 失败。激活观察原始结果。

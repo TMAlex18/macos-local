@@ -1,0 +1,326 @@
+From: macos-local research
+Subject: [PATCH] Selective 16 KiB guest-page SoftMMU flushes and EL2/EL3 inline fast paths
+
+Avoid poisoning CPUTLBDesc::large_page_mask on ordinary 16 KiB guest pages
+when TARGET_PAGE_BITS == 12, fix the byte-vs-VA unit comparison in
+tlb_flush_range_locked(), and widen single-page/range invalidations outward
+to 16 KiB boundaries when 16 KiB pages are present. Also add inline fast
+paths in target/arm/cpu.h when EL2 and EL3 are absent.
+
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -284,6 +284,7 @@
+     desc->n_used_entries = 0;
+     desc->large_page_addr = -1;
+     desc->large_page_mask = -1;
++    desc->has_16k_pages = false;
+     desc->vindex = 0;
+     memset(fast->table, -1, sizeof_tlb(fast));
+     memset(desc->vtable, -1, sizeof(desc->vtable));
+@@ -507,8 +508,9 @@
+ 
+ static void tlb_flush_page_locked(CPUState *cpu, int midx, vaddr page)
+ {
+-    vaddr lp_addr = cpu->neg.tlb.d[midx].large_page_addr;
+-    vaddr lp_mask = cpu->neg.tlb.d[midx].large_page_mask;
++    CPUTLBDesc *desc = &cpu->neg.tlb.d[midx];
++    vaddr lp_addr = desc->large_page_addr;
++    vaddr lp_mask = desc->large_page_mask;
+ 
+     /* Check if we need to flush due to large pages.  */
+     if ((page & lp_mask) == lp_addr) {
+@@ -516,6 +518,15 @@
+                   VADDR_PRIx "/%016" VADDR_PRIx ")\n",
+                   midx, lp_addr, lp_mask);
+         tlb_flush_one_mmuidx_locked(cpu, midx, get_clock_realtime());
++    } else if (desc->has_16k_pages) {
++        vaddr base = page & ~(vaddr)0x3fff;
++        for (vaddr ofs = 0; ofs < 0x4000; ofs += TARGET_PAGE_SIZE) {
++            vaddr sub = base + ofs;
++            if (tlb_flush_entry_locked(tlb_entry(cpu, midx, sub), sub)) {
++                tlb_n_used_entries_dec(cpu, midx);
++            }
++        }
++        tlb_flush_vtlb_page_mask_locked(cpu, midx, base, ~(vaddr)0x3fff);
+     } else {
+         if (tlb_flush_entry_locked(tlb_entry(cpu, midx, page), page)) {
+             tlb_n_used_entries_dec(cpu, midx);
+@@ -538,6 +549,7 @@
+                                              MMUIdxMap idxmap)
+ {
+     int mmu_idx;
++    bool had_16k = false;
+ 
+     assert_cpu_is_self(cpu);
+ 
+@@ -546,6 +558,9 @@
+     qemu_spin_lock(&cpu->neg.tlb.c.lock);
+     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+         if ((idxmap >> mmu_idx) & 1) {
++            if (cpu->neg.tlb.d[mmu_idx].has_16k_pages) {
++                had_16k = true;
++            }
+             tlb_flush_page_locked(cpu, mmu_idx, addr);
+         }
+     }
+@@ -555,8 +570,15 @@
+      * Discard jump cache entries for any tb which might potentially
+      * overlap the flushed page, which includes the previous.
+      */
+-    tb_jmp_cache_clear_page(cpu, addr - TARGET_PAGE_SIZE);
+-    tb_jmp_cache_clear_page(cpu, addr);
++    if (had_16k) {
++        vaddr base = addr & ~(vaddr)0x3fff;
++        for (vaddr ofs = 0; ofs <= 0x4000; ofs += TARGET_PAGE_SIZE) {
++            tb_jmp_cache_clear_page(cpu, base - TARGET_PAGE_SIZE + ofs);
++        }
++    } else {
++        tb_jmp_cache_clear_page(cpu, addr - TARGET_PAGE_SIZE);
++        tb_jmp_cache_clear_page(cpu, addr);
++    }
+ }
+ 
+ /**
+@@ -676,6 +698,13 @@
+     CPUTLBDesc *d = &cpu->neg.tlb.d[midx];
+     CPUTLBDescFast *f = cpu_tlb_fast(cpu, midx);
+     vaddr mask = MAKE_64BIT_MASK(0, bits);
++    vaddr tlb_mask = (vaddr)(f->mask >> CPU_TLB_ENTRY_BITS) << TARGET_PAGE_BITS;
++
++    if (d->has_16k_pages) {
++        vaddr aligned = addr & ~(vaddr)0x3fff;
++        len = QEMU_ALIGN_UP((addr - aligned) + len, 0x4000);
++        addr = aligned;
++    }
+ 
+     /*
+      * If @bits is smaller than the tlb size, there may be multiple entries
+@@ -687,7 +716,7 @@
+      * If @len is larger than the tlb size, then it will take longer to
+      * test all of the entries in the TLB than it will to flush it all.
+      */
+-    if (mask < f->mask || len > f->mask) {
++    if (mask < tlb_mask || len > tlb_mask) {
+         tlb_debug("forcing full flush midx %d ("
+                   "%016" VADDR_PRIx "/%016" VADDR_PRIx "+%016" VADDR_PRIx ")\n",
+                   midx, addr, mask, len);
+@@ -730,6 +759,7 @@
+                                               TLBFlushRangeData d)
+ {
+     int mmu_idx;
++    bool had_16k = false;
+ 
+     assert_cpu_is_self(cpu);
+ 
+@@ -739,10 +769,19 @@
+     qemu_spin_lock(&cpu->neg.tlb.c.lock);
+     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+         if ((d.idxmap >> mmu_idx) & 1) {
++            if (cpu->neg.tlb.d[mmu_idx].has_16k_pages) {
++                had_16k = true;
++            }
+             tlb_flush_range_locked(cpu, mmu_idx, d.addr, d.len, d.bits);
+         }
+     }
+     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
++
++    if (had_16k) {
++        vaddr aligned = d.addr & ~(vaddr)0x3fff;
++        d.len = QEMU_ALIGN_UP((d.addr - aligned) + d.len, 0x4000);
++        d.addr = aligned;
++    }
+ 
+     /*
+      * If the length is larger than the jump cache size, then it will take
+@@ -1228,6 +1267,9 @@
+ 
+     if (full->lg_page_size <= TARGET_PAGE_BITS) {
+         sz = TARGET_PAGE_SIZE;
++    } else if (TARGET_PAGE_BITS == 12 && full->lg_page_size == 14) {
++        sz = (hwaddr)1 << 14;
++        desc->has_16k_pages = true;
+     } else {
+         sz = (hwaddr)1 << full->lg_page_size;
+         tlb_add_large_page(cpu, mmu_idx, addr, sz);
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -284,6 +284,7 @@
+      */
+     vaddr large_page_addr;
+     vaddr large_page_mask;
++    bool has_16k_pages;
+     /* host time (in ns) at the beginning of the time window */
+     int64_t window_begin_ns;
+     /* maximum number of entries observed in the window */
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -2290,10 +2290,20 @@
+  * Return true if exception levels below EL3 are in secure state,
+  * or would be following an exception return to those levels.
+  */
++static inline ARMSecuritySpace arm_security_space_below_el3_fast(CPUARMState *env)
++{
++    if (likely(!arm_feature(env, ARM_FEATURE_EL3))) {
++        return ARMSS_NonSecure;
++    }
++    return arm_security_space_below_el3(env);
++}
++
+ static inline bool arm_is_secure_below_el3(CPUARMState *env)
+ {
+-    ARMSecuritySpace ss = arm_security_space_below_el3(env);
+-    return ss == ARMSS_Secure;
++    if (likely(!arm_feature(env, ARM_FEATURE_EL3))) {
++        return false;
++    }
++    return arm_security_space_below_el3(env) == ARMSS_Secure;
+ }
+ 
+ /* Return true if the CPU is AArch64 EL3 or AArch32 Mon */
+@@ -2346,11 +2356,19 @@
+ 
+ static inline bool arm_is_el2_enabled(CPUARMState *env)
+ {
++    if (likely(!arm_feature(env, ARM_FEATURE_EL2))) {
++        return false;
++    }
+     return arm_is_el2_enabled_secstate(env, arm_security_space_below_el3(env));
+ }
+ 
+ #else
+ static inline ARMSecuritySpace arm_security_space_below_el3(CPUARMState *env)
++{
++    return ARMSS_NonSecure;
++}
++
++static inline ARMSecuritySpace arm_security_space_below_el3_fast(CPUARMState *env)
+ {
+     return ARMSS_NonSecure;
+ }
+@@ -2393,10 +2411,27 @@
+  * "for all purposes other than a direct read or write access of HCR_EL2."
+  * Not included here is HCR_RW.
+  */
+-uint64_t arm_hcr_el2_eff_secstate(CPUARMState *env, ARMSecuritySpace space);
+-uint64_t arm_hcr_el2_eff(CPUARMState *env);
++uint64_t arm_hcr_el2_eff_secstate_slow(CPUARMState *env, ARMSecuritySpace space);
++uint64_t arm_hcr_el2_eff_slow(CPUARMState *env);
+ uint64_t arm_hcr_el2_nvx_eff(CPUARMState *env);
+ uint64_t arm_hcrx_el2_eff(CPUARMState *env);
++
++static inline uint64_t arm_hcr_el2_eff_secstate(CPUARMState *env,
++                                                ARMSecuritySpace space)
++{
++    if (likely(!arm_feature(env, ARM_FEATURE_EL2))) {
++        return 0;
++    }
++    return arm_hcr_el2_eff_secstate_slow(env, space);
++}
++
++static inline uint64_t arm_hcr_el2_eff(CPUARMState *env)
++{
++    if (likely(!arm_feature(env, ARM_FEATURE_EL2))) {
++        return 0;
++    }
++    return arm_hcr_el2_eff_slow(env);
++}
+ 
+ /*
+  * Function for determining whether guest cp register reads and writes should
+@@ -2522,7 +2557,17 @@
+         (env->cp15.sctlr_el[1] & SCTLR_B) != 0;
+ }
+ 
+-uint64_t arm_sctlr(CPUARMState *env, int el);
++uint64_t arm_sctlr_slow(CPUARMState *env, int el);
++
++static inline uint64_t arm_sctlr(CPUARMState *env, int el)
++{
++    if (likely(!(env->features & ((1ULL << ARM_FEATURE_EL2) |
++                                  (1ULL << ARM_FEATURE_EL3) |
++                                  (1ULL << ARM_FEATURE_M))))) {
++        return env->cp15.sctlr_el[el == 0 ? 1 : el];
++    }
++    return arm_sctlr_slow(env, el);
++}
+ 
+ /*
+  * We have more than 32-bits worth of state per TB, so we split the data
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -4044,7 +4044,7 @@
+  * Bits that are not included here:
+  * RW       (read from SCR_EL3.RW as needed)
+  */
+-uint64_t arm_hcr_el2_eff_secstate(CPUARMState *env, ARMSecuritySpace space)
++uint64_t arm_hcr_el2_eff_secstate_slow(CPUARMState *env, ARMSecuritySpace space)
+ {
+     uint64_t ret = env->cp15.hcr_el2;
+ 
+@@ -4109,12 +4109,13 @@
+     return ret;
+ }
+ 
+-uint64_t arm_hcr_el2_eff(CPUARMState *env)
++uint64_t arm_hcr_el2_eff_slow(CPUARMState *env)
+ {
+     if (arm_feature(env, ARM_FEATURE_M)) {
+         return 0;
+     }
+-    return arm_hcr_el2_eff_secstate(env, arm_security_space_below_el3(env));
++    return arm_hcr_el2_eff_secstate_slow(env,
++                                         arm_security_space_below_el3_fast(env));
+ }
+ 
+ uint64_t arm_hcr_el2_nvx_eff(CPUARMState *env)
+@@ -9964,7 +9965,7 @@
+ }
+ #endif /* !CONFIG_USER_ONLY */
+ 
+-uint64_t arm_sctlr(CPUARMState *env, int el)
++uint64_t arm_sctlr_slow(CPUARMState *env, int el)
+ {
+     /* Only EL0 needs to be adjusted for EL1&0 or EL2&0 or EL3&0 */
+     if (el == 0) {
+diff --git a/target/arm/ptw.c b/target/arm/ptw.c
+--- a/target/arm/ptw.c
++++ b/target/arm/ptw.c
+@@ -213,7 +213,7 @@
+         return ARMMMUIdx_Phys_NS;
+     }
+ 
+-    switch (arm_security_space_below_el3(env)) {
++    switch (arm_security_space_below_el3_fast(env)) {
+     case ARMSS_NonSecure:
+         return ARMMMUIdx_Phys_NS;
+     case ARMSS_Realm:
+@@ -4093,14 +4093,14 @@
+     case ARMMMUIdx_Stage1_E1_GCS:
+     case ARMMMUIdx_E2:
+     case ARMMMUIdx_E2_GCS:
+-        ss = arm_security_space_below_el3(env);
++        ss = arm_security_space_below_el3_fast(env);
+         break;
+     case ARMMMUIdx_Stage2:
+         /*
+          * For Secure EL2, we need this index to be NonSecure;
+          * otherwise this will already be NonSecure or Realm.
+          */
+-        ss = arm_security_space_below_el3(env);
++        ss = arm_security_space_below_el3_fast(env);
+         if (ss == ARMSS_Secure) {
+             ss = ARMSS_NonSecure;
+         }
+@@ -4192,7 +4192,7 @@
+     /* Deliberately small EL0/NS stage-1 scope. Reject before any PTW read. */
+     if (!env->aarch64 || arm_current_el(env) != 0 ||
+         mmu_idx != ARMMMUIdx_E10_0 ||
+-        arm_security_space_below_el3(env) != ARMSS_NonSecure ||
++        arm_security_space_below_el3_fast(env) != ARMSS_NonSecure ||
+         !(env->cp15.sctlr_el[1] & SCTLR_M) ||
+         (arm_hcr_el2_eff(env) & (HCR_VM | HCR_DC)) ||
+         FIELD_EX64(env->cp15.gpccr_el3, GPCCR, GPC) ||

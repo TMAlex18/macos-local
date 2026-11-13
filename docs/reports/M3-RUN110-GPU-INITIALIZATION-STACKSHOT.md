@@ -14,12 +14,12 @@ This was an observation-path failure, not a new Safari trial.
 
 `r110canary.tgz` then verified a unique event emitted through the real unified
 log subscription, FIFO and parser. In `r110stack2`, root watcher readiness
-was recorded at 01:40:45 UTC, before the ordinary user (UID501) opened Safari.
+was recorded at 01:40:45 UTC, before the ordinary user (UID 501) opened Safari.
 The preparation records `SAFARI_EXIT_CONFIRMED`. Readiness verification did
 not itself change or fix Safari behavior.
 
 `r110stack2.tgz` contains a real Stackshots report for the first Safari-owned
-GPU1941: **99 target samples over the 9.99-second report window**, with
+GPU 1941: **99 target samples over the 9.99-second report window**, with
 actual initialization frames and user/kernel waits. The report records one
 suspended sample and one terminated/zombie sample. Relevant UTC times on
 November 7 are:
@@ -31,8 +31,8 @@ November 7 are:
 | GPU connection initialization | 01:42:08.338 |
 | AudioComponentRegistrar connection | 01:42:10.644 |
 | SandboxHelper connection creation | 01:42:10.934 |
-| Safari watchdog termination request for GPU1941 | 01:42:11.338 |
-| GPU1941 report end | 01:42:12.149 |
+| Safari watchdog termination request for GPU 1941 | 01:42:11.338 |
+| GPU 1941 report end | 01:42:12.149 |
 
 The connection-to-watchdog interval is exactly three seconds in the retained
 log. The main thread progresses through `enableMediaPlaybackIfNecessary`,
@@ -48,7 +48,7 @@ Native spindump eventually returned 0 and saved the report, but its outer
 deadline fired: `outer_timeout=true`, watcher exit 124. Owned children were
 reaped and the archive returned. Valid target stacks and an exceeded wrapper
 deadline are separate results. The same stream contains two Safari watchdog
-requests, for GPU1941 and GPU2106.
+requests, for GPU 1941 and GPU 2106.
 
 At 01:44:29.957500 UTC the PID-bound native window displayed the authored
 RGB page. The three CSS-color interior ROIs contain **173,400 exact pixels**.
@@ -59,7 +59,7 @@ general Metal fidelity.
 ## Restored audio binds, but this PCM repeat is not bit-exact
 
 The restored two-stream device registered and supplied CoreAudio defaults.
-Plain `afplay` PID840 exited 0, yet the complete-reference comparison failed.
+Plain `afplay` PID 840 exited 0, yet the complete-reference comparison failed.
 `pcm-content-analysis.json` exactly reconstructs the captured bytes:
 
 - Reference frames `[0,11776)` and `[12540,96000)` remain byte-exact.

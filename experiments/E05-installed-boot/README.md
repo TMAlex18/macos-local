@@ -638,6 +638,31 @@ window (`log show`, stopped after 120 seconds), launchd's own log lines for
 it, one process list with start times and CPU times, and the output of
 `memory_pressure`. It launches nothing and changes no setting.
 
+When `sudo -n` is available, `sudo -n python3 experiments/E05-installed-boot/block_sampler.py
+--pid PID --comm-prefix 'CPU ' --seconds 40 --stack-words 24 --out FILE`
+samples `/proc/PID/task/TID/syscall` without stopping the threads, recording
+whether each vCPU thread is running or blocked on a specific futex address.
+`python3 experiments/E05-installed-boot/block_report.py FILE --binary
+build/qemu-bdif-usb/qemu-system-aarch64 [--from US --to US] [--json]` resolves
+futex addresses against the executable's data symbols (`bql`,
+`exclusive_resume`, `exclusive_cond`, `qemu_cpu_list_lock`) and scans optional
+stack words for the innermost caller nearest the lock (outer frames are raw
+stack-word hints, not DWARF unwinds).
+
+On a QEMU build containing matching patch `0033`, `--sync-stats` adds
+`x-sync-stats=on` to `-cpu` without changing default argv when omitted. Each
+vCPU then counts MTTCG outer-loop exits, inner BQL acquisitions (`do_interrupt`,
+`handle_interrupt`, `ERET` hooks, `ARM_CP_IO` reads/writes, TCG MMIO, page-table
+walks), exclusive-section sources (`tlbi` all/page/range, atomic step, TB flush),
+and per-register `ARM_CP_IO`/`TLBI` operations in thread-local counters with no
+additional locks. `python3 experiments/E05-installed-boot/sync_stats.py snapshot
+--run LABEL --out FILE.json` reads `x-sync-stats-json` from every vCPU over the
+authenticated read-only `inspect.sock` without pausing the VM, and
+`sync_stats.py diff BEFORE.json AFTER.json [--out DIFF.json]` computes exact
+window deltas and ranked register/TLBI tables. Bare-metal dual-vCPU counter
+coverage is in [`experiments/E06-sync-counters/`](../E06-sync-counters/README.md)
+(`make sync-counter-tests`).
+
 ## Initial-setup input helper
 
 `guest_ui.py` binds an observing run to its actual QEMU PID, executable,

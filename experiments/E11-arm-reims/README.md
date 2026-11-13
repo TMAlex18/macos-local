@@ -160,7 +160,7 @@ python3 experiments/E11-arm-reims/run-gpu.py --workload compute --heap --platfor
 ```
 
 `--heap`复用同一自有`compute_add` shader和runner，建立type13的20MiB heap及
-覆盖它的type14 buffer。1280个guest16KiB页的物理地址按相邻pair反序，验证
+覆盖它的type14 buffer。1280个guest 16KiB页的物理地址按相邻pair反序，验证
 分段guest页真正聚合成GPU可用的alias；独立输入buffer为20MiB。
 GPU以256线程/组计算5242880个uint32，guest按虚拟页到物理页的映射逐字检查
 全部输出为`input+1`、完整输入未变及heap/input末尾两份16KiB guard不变。
@@ -173,9 +173,9 @@ GPU以256线程/组计算5242880个uint32，guest按虚拟页到物理页的映�
 - 修复前6731911f结果：
   初始化IRQ1/2完成，首次GPU exec创建heap时报同20MiB remap fatal，QEMU exit-6。
 - 修复后f5dfbf2d结果：
-  全部20MiB输出、20MiB输入、32KiB guard及真实IRQ49通过，正常exit0。
+  全部20MiB输出、20MiB输入、32KiB guard及真实IRQ49通过，正常 exit 0。
 - 同一新binary的RGhA回归：
-  原始RGBA16Float像素/guard、GPU/display IRQ及真实owned nativewindow红蓝图像通过。
+  原始RGBA16Float像素/guard、GPU/display IRQ及真实owned native window红蓝图像通过。
 
 host层验证包括Linux VM 11项、
 backing 12项、
@@ -202,8 +202,8 @@ interlock/storage image；原实现对普通half-float attachment只接受替换
 的普通路径缺失，前面的shader-side-depth-test warning不是该拒绝条件。
 
 自有fixture的修复前拒绝在同一配置重现：
-colour0 RGBA16Float115、RGB/alpha均One/OneMinusSourceAlpha/Add、mask0xf，
-colour1 RG16Float65与colour2 RGBA16Float115均mask0，depth/stencil260、
+colour0 RGBA16Float (115)、RGB/alpha均One/OneMinusSourceAlpha/Add、mask 0xf，
+colour1 RG16Float (65)与colour2 RGBA16Float (115)均mask 0，depth/stencil 260、
 无vertex descriptor。使用仓库已有`fetch_half_fragment`/`fetch_float_fragment`
 metallib；最终执行fixture复用E11已有buffer驱动vertex，避免另一个测试vertex的
 FunctionStorageAssumed严格拒绝。没有提取或提交Apple shader。
@@ -214,7 +214,7 @@ interlock内读取destination、计算`source + destination * (1 - source.a)`并
 保持原选择，未禁blend或把读取改为unordered。既有Exact half模型仍为opt-in，
 默认float算术保留source/conversion precision notes；缓存语义版本1691→1692。
 依赖没有换版本：`tools/prepare-metal2vulkan-research.sh`校验同一pin及patch，
-Reims0007通过Cargo patch overlay使用它，不修改共享Cargo下载缓存。
+Reims 0007通过Cargo patch overlay使用它，不修改共享Cargo下载缓存。
 
 真实NVIDIA release消费者经Reims的serialized descriptor、render encoder和GPU
 blit readback执行。每种正例检查16×16全部像素及两份未使用attachment：
@@ -456,9 +456,9 @@ guest导出的PNG仍是源像素证据，不替代原生窗口capture。helper�
 限制为这个子进程的client window，不截取整屏。
 
 2026-10-23首次restore-research/NVIDIA/IRQ实际窗口验证通过：guest presentCount
-0→1、presentedMappingID1、ISR49的port bit0和raised present bit2均满足。
+0→1、presentedMappingID=1、ISR49的port bit0和raised present bit2均满足。
 实际自有X11 client为320×200，原生capture的三角形内外区域匹配；同一QEMU
-记录window帧与window GPU时间（首个统计周期window2.0/s、GPU0.11ms）。这是
+记录window帧与window GPU时间（首个统计周期window 2.0/s、GPU 0.11ms）。这是
 本次普通窗口帧路径的执行证据，不是吞吐或延迟基准。guest按5秒保帧窗口正常
 退出，窗口已关闭。
 
@@ -486,15 +486,15 @@ python3 experiments/E11-arm-reims/run-gpu.py --workload present --platform resto
 ```
 
 这两个有界case已按序在同一canonical `build/qemu-bdif-usb/qemu-system-aarch64`
-上通过，binary SHA如命令所示。half-float surface为64×64、rowbytes512、
-image32768字节，另有16KiB guard；v2 descriptor、16KiB guest page table、
+上通过，binary SHA如命令所示。half-float surface为64×64、rowbytes 512、
+image 32768字节，另有16KiB guard；v2 descriptor、16KiB guest page table、
 type11/op12 mapper texture及pipeline format均实际切到RGhA/115。
 CPU只初始化sentinel并提交既有shader/三角形，GPU正常绘制后，guest独立按
 三角形半平面检查4096个原始像素的全部64位：1152红、2944蓝，binary16的
 0/1须分别精确为`0x0000`/`0x3c00`，整个guard不变。没有CPU生成答案图。
 
-两case都验证Map status0/mapped写回、GPU stamp3真实INTID49、display
-presentCount0→1/mapping1及独立port bit0/present bit2；host日志分别报告
+两case都验证Map status 0 / mapped写回、GPU stamp3真实INTID49、display
+presentCount 0→1 / mapping 1及独立port bit0/present bit2；host日志分别报告
 64×64的`0x42475241`/`0x52476841`。独立XGetImage从各自QEMU拥有的320×200
 原生窗口捕获红蓝三角形，几何/区域oracle匹配，且记录到window GPU执行统计。
 两个QEMU都正常退出，临时stub盘随runner清理。
@@ -549,7 +549,7 @@ ID1在删task texture后仍Busy；切到ID2后首个正常Unmap即成功、mappe
 ## 窗口输入、QEMU消费者与guest USB报告
 
 固定源码中的正常键盘/指针路径已经接线：SDL事件经Reims窗口回调到
-`apple-gfx.c`的事件队列/BH，再进入QEMU input层。键盘按USB HID usage page0x07
+`apple-gfx.c`的事件队列/BH，再进入QEMU input层。键盘按USB HID usage page 0x07
 映射到QEMU Linux/qcode，指针按guest mode换算为绝对坐标。键盘要求窗口已有
 正常focus；指针要求已有guest mode且事件落在图像区域。没有guest输入设备
 handler时，QEMU input层会丢弃事件，窗口自身响应不代表guest收到。
@@ -566,7 +566,7 @@ GPU记录使用`cf6d4da1bc1d6890f94a59b59e1c53a0997ec62048f50281ed98f8e94363381c
 当前graphics SHA为`d392abb3c29eae658ab256550ac81a435e2c6354d157a8a959cb3b3542010fce`，
 当前bdif SHA为`b0123d45ebc127f6e1b46727c937174100ddd45b0d9adc17e2ce0e7c52ce91da`。
 新版graphics的一次无窗口NVIDIA compute IRQ smoke
-已通过：实际运行设备为RTX5070Ti Laptop GPU (`0x10de:0x2f18`)，256项数值与
+已通过：实际运行设备为 RTX 5070 Ti Laptop GPU (`0x10de:0x2f18`)，256项数值与
 全部guard检查、真实INTID49/stamp3工作完成均通过，guest退出0。此项只覆盖
 普通graphics profile，未在新版上重跑窗口/输入矩阵。所有原有workload保持
 `-nodefaults`及原设备集；只有输入workload显式添加设备。
@@ -640,7 +640,7 @@ xHCI声明INTA（PCI pin1，内部pin0），GPEX索引为`(slot3 + pin0) % 4 = 3
 板级另有GICv2m MSI桥，本用例不验证MSI/MSI-X；guest会检查其enable位均为0。
 
 `probe-input.c`复用既有标准控制传输完成枚举，再读取实际USB configuration
-descriptor。当前设备提供endpoint`0x81`、interrupt-IN、8字节、high-speed
+descriptor。当前设备提供 endpoint `0x81`、interrupt-IN、8字节、high-speed
 `bInterval=7`。`guest-usb-irq.h`用Configure Endpoint命令建立DCI3与独立transfer
 ring，提交Normal TRB，启动xHCI interrupter0/INTE和level SPI67。guest RAM分配
 仍以16KiB对齐；xHCI的PAGESIZE合同是4KiB，两者不混用。
@@ -682,7 +682,7 @@ runner同时检查USB down ISR→green GPU→green display→USB release的UART
 默认自动关闭，正常约10秒，host上界20秒，USB每个等待阶段由guest计时5秒。
 
 2026-10-23唯一一次NVIDIA组合调用直接通过，
-guest退出0并回收窗口，无重评或重跑。实际QEMU stderr确认RTX5070Ti Laptop
+guest退出0并回收窗口，无重评或重跑。实际QEMU stderr确认 RTX 5070 Ti Laptop
 GPU执行；同一次UART严格按red present→USB down ISR67→green GPU stamp9
 ISR49→green present count2/mapping2→USB release ISR67完成。两次USB均
 IMAN=3、USBSTS=8，报告usage4→全零；两次GPU完整帧均为1152个前景像素与
@@ -690,7 +690,7 @@ IMAN=3、USBSTS=8，报告usage4→全零；两次GPU完整帧均为1152个前�
 
 独立原生红图
 与原生绿图
-来自同一PID175280/XID`0x1c0002f`的320×200 client区域；host看到green图时
+来自同一 PID 175280 / XID `0x1c0002f` 的320×200 client区域；host看到green图时
 red像素计数为0。输入仅为该自有且已有focus窗口的一次定向A down/up，无全局
 输入/focus改变，也没有QMP输入。窗口GPU统计另提供真实提交证据。
 这补上同次native输入→USB中断→guest生成新GPU帧→原生显示的组合路径；
@@ -721,35 +721,35 @@ passes without rerunning the render control. This control uses a software
 renderer, and establishes no macOS, physical GPU, Metal or performance result.
 The masked Chrome string `WebKit WebGL` is not evidence of Safari execution.
 
-Run128 completed the installed-OS consumer on the existing4a43 main binary,
-network CTRL512 and the guarded finite30s diagnostic. The
+Run128 completed the installed-OS consumer on the existing 4a43 main binary,
+network CTRL 512 and the guarded finite 30 s diagnostic. The
 actual macOS oracle
-passes both entire24576B outputs with zero byte differences and the same
+passes both entire 24576 B outputs with zero byte differences and the same
 independent expected hash above. Actual context creation/dimensions,
 shader/program status, GL error checks and PUTs pass. Native pixels show
-upperCMY/lowerRGB tiles. The API reports `Apple GPU`; this does not establish
+upper CMY / lower RGB tiles. The API reports `Apple GPU`; this does not establish
 physical GPU execution, scanout, FPS, latency or general WebGL/Metal coverage.
 
 The Safari analysis
-retains one Safari-owned GPU1124: first client UIrequest→DidInitialize3.781s,
-then the WebGL page connection create→DidInitialize13.716s. These gaps are
+retains one Safari-owned GPU 1124: first client UI request → DidInitialize 3.781 s,
+then the WebGL page connection create → DidInitialize 13.716 s. These gaps are
 not measured blocking intervals. There are zero GPU watchdog requests but
 two WebProcess unresponsive notifications. Final global site0 has one hit
-onCPU2, site1 has none and rejections are zero, with unchanged per-CPU epochs.
-No PID attribution or original Safari3s performance pass follows.
+on CPU2, site1 has none and rejections are zero, with unchanged per-CPU epochs.
+No PID attribution or original Safari 3 s performance pass follows.
 
 The two raw PUTs and JSON arrive during the ordinary watcher; its retained
-timeline is133s, despite the120s request. No optional late window, reload or
+timeline is 133 s, despite the 120 s request. No optional late window, reload or
 authored PCM warmup was used. This new shader workload is not a matched
 Run127 performance reproduction. The host transport index
-records seven targeted methods (URL3/legacy directory1/GET-PUT-render2/helper1)
+records seven targeted methods (URL 3 / legacy directory 1 / GET-PUT-render 2 / helper 1)
 and separate shell syntax; synthetic transfer patterns are not rendered
 outputs. Existing URLs remain unchanged; no global URL whitelist was added.
 
 Run128 application
-records guest-origin shutdown, QEMU/files exit0/reaped, no host quit and
-alias cleanup. Controller1 is the unavailable post-exit final capture;
-`errors=[]`, filesystem cleanliness is unproved and the5s wait was not attempted.
+records guest-origin shutdown, QEMU/files exit 0 / reaped, no host quit and
+alias cleanup. Controller 1 is the unavailable post-exit final capture;
+`errors=[]`, filesystem cleanliness is unproved and the 5 s wait was not attempted.
 No VM is active. The user has requested project maintenance after this run,
 with no Run129 or new feature experiments planned. Maintenance is next and
 has not yet been executed; the long-term goal is not marked complete or paused.

@@ -32,7 +32,7 @@ termination events with reason `GPUProcessCrashedTooManyTimes`. Native captures
 `r100-fresh-render.png` and `r100-fresh-final.png` show a white page with the
 automatic problem-reload banner; no RGB page success is claimed.
 
-The first Safari-owned GPU (PID934) has this guest-local log sequence:
+The first Safari-owned GPU (PID 934) has this guest-local log sequence:
 
 | Event | Time | Archive log line |
 |---|---|---:|
@@ -55,11 +55,11 @@ RAM causality or a per-process memory attribution.
 ## Connection-triggered diagnostic
 
 A separate `r100conn` trial used the new `sample-connection` mode. Its same-log
-stream parser identified Safari ownership and triggered once for GPU1487's
+stream parser identified Safari ownership and triggered once for GPU 1487's
 02:30:07.602 connection event; guest observation was recorded at 10:30:08 UTC
 and host received the trigger upload at 10:30:12 UTC.
 
-GPU1487 was judged unresponsive at 02:30:10.681; WebContent received the
+GPU 1487 was judged unresponsive at 02:30:10.681; WebContent received the
 initialization reply at 02:30:11.732. The sampler returned 255 at approximately
 10:30:17 UTC because its target was already gone. The 32,980-byte archive
 contains the trigger and error log, but **no sample stack report**. Correct

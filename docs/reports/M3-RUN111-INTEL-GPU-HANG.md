@@ -6,7 +6,7 @@ after explicit unclean reuse of Run110's recovered storage. Normal macOS,
 the native desktop and a current `R111_SHELL_READY` Terminal echo were reached.
 
 At **2026-11-07 02:38:39 UTC**, the host kernel recorded
-`i915 GPU HANG: ecode 12:1:85def5fb` in QEMU PID28361, followed by a reset
+`i915 GPU HANG: ecode 12:1:85def5fb` in QEMU PID 28361, followed by a reset
 of that context. Reims reported Vulkan `DeviceLost` and QEMU aborted with
 exit -6. The host stayed running. This is a recorded host GPU-context failure,
 separate from Run110's whole-host reboot; their relationship and the triggering

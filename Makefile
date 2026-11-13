@@ -184,13 +184,16 @@ ctrr-contract-tests:
 ctrr-qemu-guest-tests:
 	python3 experiments/E05-ctrr/run.py
 
-.PHONY: smp-mmu-tests smp-mmu-extended
+.PHONY: smp-mmu-tests smp-mmu-extended sync-counter-tests
 # Self-authored guest only: no Apple firmware, TSS, USB/IP or system changes.
 smp-mmu-tests:
 	python3 experiments/E06-smp-mmu/run.py
 
 smp-mmu-extended:
 	python3 experiments/E06-smp-mmu/run.py --case positive --mode multi --rounds 256
+
+sync-counter-tests:
+	python3 -B experiments/E06-sync-counters/run.py
 
 # Current installed-OS orchestration checks. Run sequentially: fixtures can
 # share a loopback port. No QEMU, browser, GPU, guest or external network.
@@ -207,6 +210,8 @@ installed-offline-tests:
 	python3 -B experiments/E05-installed-boot/test-timeout-diagnostic.py
 	python3 -B experiments/E05-installed-boot/test-gpu-init-timing.py
 	python3 -B experiments/E05-installed-boot/test-host-cpu-profile.py
+	python3 -B experiments/E05-installed-boot/test-block-sampler.py
+	python3 -B experiments/E05-installed-boot/test-sync-stats.py
 	python3 -B experiments/E05-installed-boot/test-log-window.py
 	python3 -B experiments/E05-installed-boot/test-gpuwatch-offline.py
 	python3 -B experiments/E05-installed-boot/test-shared-cache-identity.py

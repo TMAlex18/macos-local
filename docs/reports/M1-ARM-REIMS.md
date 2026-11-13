@@ -113,4 +113,4 @@ command/host readback experiment.
 
 新版Reims库已重建并静态重链接QEMU；旧smoke和guest Nop/GetDeviceInfo命令回写通过，NO_DOORBELL负例符合预期。现在已经超过单纯FIFO创建，但还不是draw/compute/GUI。
 
-补丁重建验证覆盖Reims14个修改文件、QEMU3个修改文件；这不是空白宿主全量构建证明。后续队列见MASTER-PLAN.md和生成的STATUS.md。
+补丁重建验证覆盖 Reims 14 个修改文件、QEMU 3 个修改文件；这不是空白宿主全量构建证明。后续队列见 MASTER-PLAN.md 和生成的 STATUS.md。

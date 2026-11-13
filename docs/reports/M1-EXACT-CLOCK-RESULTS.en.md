@@ -46,7 +46,7 @@ Observations confirm that the prior ~1.6% systematic rate bias no longer appears
 
 ## 4. Isolation, Reproduction, and Boundaries
 
-`build/qemu-clock-exact/qemu-system-aarch64` uses upstream pin `1a72df984914fb9929d35b1217619178133d65a4` + patch0003 + patch0005, isolated from both normal mainline and headless negative-control builds. This branch excludes the placeholder AVP RTC/CTRR patch0004.
+`build/qemu-clock-exact/qemu-system-aarch64` uses upstream pin `1a72df984914fb9929d35b1217619178133d65a4` + patch 0003 + patch 0005, isolated from both normal mainline and headless negative-control builds. This branch excludes the placeholder AVP RTC/CTRR patch 0004.
 
 Exact mode is enabled only via `max,cntfrq=24000000,x-cntfrq-exact=on` and defaults to off. Mainline default frequencies and existing guest bundles remain unmodified. Live migration, dynamic frequency scaling, KVM, full-EL/multicore time synchronization, and the target Apple OS remain unverified.
 

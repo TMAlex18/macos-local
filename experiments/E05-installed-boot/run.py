@@ -31,6 +31,7 @@ PCM_TRACE_PATCH = 'patches/qemu-platform/0023-virtio-snd-pcm-boundary-trace.patc
 SOUND_EMPTY_INFO_PATCH = 'patches/qemu-platform/0027-virtio-snd-empty-info.patch'
 SOUND_QUEUE_SIZE_PATCH = 'patches/qemu-platform/0028-virtio-snd-queue-size.patch'
 NET_CONTROL_QUEUE_SIZE_PATCH = 'patches/qemu-platform/0032-virtio-net-control-queue-size.patch'
+SYNC_STATS_PATCH = 'patches/qemu-platform/0033-tcg-sync-source-counters.patch'
 SAMPLE_SECONDS = 15
 SCREEN_SECONDS = 60
 SCREEN_MAX_FILES = 16
@@ -93,6 +94,17 @@ def require_net_control_queue_size_build(fixed_build):
     return {'patch':NET_CONTROL_QUEUE_SIZE_PATCH,'patch_sha256':expected}
 
 
+def require_sync_stats_build(fixed_build):
+    """Explicit per-vCPU TCG sync statistics require the matching 0033 build."""
+    record=json.loads((ROOT/'runs/qemu-bdif-usb-build.json').read_text())
+    expected=hashlib.sha256((ROOT/SYNC_STATS_PATCH).read_bytes()).hexdigest()
+    if (record.get('binary_sha256')!=fixed_build.get('binary_sha256') or
+            SYNC_STATS_PATCH not in record.get('patches',[]) or
+            record.get('patch_sha256',{}).get(SYNC_STATS_PATCH)!=expected):
+        raise ValueError('Requested TCG sync statistics are not verified in this QEMU build; rebuild with 0033')
+    return {'patch':SYNC_STATS_PATCH,'patch_sha256':expected}
+
+
 def require_pauth_memo_capacity_build(fixed_build,entries=None):
     """Existing capacities/statistics need 0024; 16384 additionally needs 0029."""
     record=json.loads((ROOT/'runs/qemu-bdif-usb-build.json').read_text())
@@ -114,7 +126,8 @@ def require_pauth_memo_capacity_build(fixed_build,entries=None):
 def qemu_profile(args, presentation=None, network=None, *, pauth_memo=False, ram_gib=4,
                  virtio_sound=False, audio=None,sound_backend='none',run_directory=None,
                  sound_pcm_trace=False,sound_queue_size=None,sound_streams=None,pauth_memo_entries=None,pauth_memo_stats=False,
-                 webkit_timeout_diagnostic=False,net_control_queue_size=None,pauth_algorithm='qarma5'):
+                 webkit_timeout_diagnostic=False,net_control_queue_size=None,pauth_algorithm='qarma5',
+                 sync_stats=False):
     if type(ram_gib) is not int or ram_gib not in (4,8):
         raise ValueError('Only explicit 4/8-GiB RAM profiles are supported')
     if not isinstance(args, list) or not args:
@@ -128,7 +141,8 @@ def qemu_profile(args, presentation=None, network=None, *, pauth_memo=False, ram
             option(args, '-smp') not in ('2','4','8') or
             option(args, '-cpu') != cpu_model(pauth_algorithm,pauth_memo=pauth_memo,
                                                 pauth_memo_entries=pauth_memo_entries,pauth_memo_stats=pauth_memo_stats,
-                                                webkit_timeout_diagnostic=webkit_timeout_diagnostic) or
+                                                webkit_timeout_diagnostic=webkit_timeout_diagnostic,
+                                                sync_stats=sync_stats) or
             option(args, '-accel') != 'tcg,thread=multi' or option(args, '-display') != 'none' or
             ram_objects != [f'memory-backend-memfd,id=ram,size={memory},share=on'] or
             any(value in args for value in ('-incoming', '-loadvm', '-kernel', '-append'))):
@@ -185,6 +199,7 @@ def qemu_profile(args, presentation=None, network=None, *, pauth_memo=False, ram
             'vcpus': int(option(args,'-smp')), 'cpu': option(args, '-cpu'),
             'pauth_algorithm':pauth_algorithm,'pauth_memo_requested':pauth_memo,
         'pauth_memo_entries_requested':pauth_memo_entries,'pauth_memo_stats_requested':pauth_memo_stats,
+            'sync_stats_requested':sync_stats,
             'accelerator': 'tcg,thread=multi', 'ram_backend': 'fresh memory-backend-memfd',
             'display': 'none', 'presentation': presentation, 'storage_frontends': paths,
             'virtio_usb_present': True,
@@ -539,7 +554,7 @@ def run(source_run, label, seconds=None, *, usb_input=False, native_window=False
         virtio_sound=False,sound_backend='none',sound_pcm_trace=False,sound_queue_size=None,sound_streams=None,
         pauth_memo_entries=None,pauth_memo_stats=False,vcpu_affinity=None,
         kernel_observation='continuous',webkit_timeout_diagnostic=False,net_control_queue_size=None,
-        pauth_algorithm='qarma5'):
+        pauth_algorithm='qarma5',sync_stats=False):
     if not isinstance(label, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,60}', label):
         raise ValueError('Invalid cold-boot run label')
     if type(interactive) is not bool or (interactive and seconds is not None):
@@ -568,7 +583,7 @@ def run(source_run, label, seconds=None, *, usb_input=False, native_window=False
     # Rejects an unknown algorithm and impdef combined with memoization before any session exists.
     cpu_model(pauth_algorithm,pauth_memo=pauth_memo,
               pauth_memo_entries=pauth_memo_entries,pauth_memo_stats=pauth_memo_stats,
-              webkit_timeout_diagnostic=webkit_timeout_diagnostic)
+              webkit_timeout_diagnostic=webkit_timeout_diagnostic,sync_stats=sync_stats)
     window_refresh_value(display_refresh_hz,native_window)
     # Complete the eligibility checks before creating a new session or aliases.
     source = validate_source(source_run)
@@ -583,6 +598,8 @@ def run(source_run, label, seconds=None, *, usb_input=False, native_window=False
         current_build={**current_build,'net_control_queue_size':require_net_control_queue_size_build(current_build)}
     if pauth_memo_entries is not None or pauth_memo_stats:
         current_build={**current_build,'pauth_memo_capacity':require_pauth_memo_capacity_build(current_build,pauth_memo_entries)}
+    if sync_stats:
+        current_build={**current_build,'sync_stats':require_sync_stats_build(current_build)}
     process_contract = None
     if sample_current_process:
         try:
@@ -604,6 +621,7 @@ def run(source_run, label, seconds=None, *, usb_input=False, native_window=False
         'ram_gib_requested':ram_gib,'ram_bytes_requested':ram_gib * 1024**3,
         'pauth_algorithm_requested':pauth_algorithm,'pauth_memo_requested':pauth_memo,
             'pauth_memo_entries_requested':pauth_memo_entries,'pauth_memo_stats_requested':pauth_memo_stats,
+        'sync_stats_requested':sync_stats,
         'pauth_memo_statistics':{'requested':pauth_memo_stats,'sample_count':0,'first':None,'latest':None},
         'state': 'starting', 'observation_completed': False, 'passed': False, 'errors': [], 'interrupted':False,
         'normal_os_boot_proven': False, 'recovery_os_boot_proven': False,
@@ -673,7 +691,7 @@ def run(source_run, label, seconds=None, *, usb_input=False, native_window=False
             sound_pcm_trace=sound_pcm_trace,sound_queue_size=sound_queue_size,sound_streams=sound_streams,
             pauth_memo_entries=pauth_memo_entries,pauth_memo_stats=pauth_memo_stats,
             vcpu_affinity=vcpu_affinity,webkit_timeout_diagnostic=webkit_timeout_diagnostic,
-            net_control_queue_size=net_control_queue_size)
+            net_control_queue_size=net_control_queue_size,sync_stats=sync_stats)
         with session as fw:
             retained = fw.retain_blank_storage(private / 'storage')
             if retained.get('qemu_binary_sha256') != current_build['binary_sha256']:
@@ -696,7 +714,8 @@ def run(source_run, label, seconds=None, *, usb_input=False, native_window=False
                                                          sound_streams=sound_streams,
                                                          pauth_memo_entries=pauth_memo_entries,pauth_memo_stats=pauth_memo_stats,
                                                          webkit_timeout_diagnostic=webkit_timeout_diagnostic,
-                                                         net_control_queue_size=net_control_queue_size)
+                                                         net_control_queue_size=net_control_queue_size,
+                                                         sync_stats=sync_stats)
             if report['current_qemu_profile']['vcpus']!=vcpus:
                 raise ValueError('Actual QEMU CPU profile differs from the requested CPU count')
             report['storage'] = dict(fw.storage_info)
@@ -881,6 +900,8 @@ def main(argv=None):
                         help='QEMU PAuth algorithm for this boot. The default qarma5 keeps the argv of every earlier run; impdef is non-cryptographic, cheaper per call and cannot be combined with --pauth-memo')
     parser.add_argument('--webkit-timeout-diagnostic',action='store_true',
                         help='Default-off fixed two-site 3s-to-30s diagnostic; requires matching0030+0031, metadata probe preflight and paused boolean arming; QEMU derives actual-PC slides, never an original-deadline performance pass')
+    parser.add_argument('--sync-stats',action='store_true',
+                        help='Default-off per-vCPU TCG BQL/exclusive trigger counters via x-sync-stats-json; requires built 0033')
     parser.add_argument('--usb-input', action='store_true', help='Expose the VM-local xHCI keyboard/tablet at PCI slot 4')
     parser.add_argument('--native-window', action='store_true', help='Request the Reims native presentation window')
     parser.add_argument('--gpu', choices=tuple(GPU_ICDS), help='Explicit single hardware Vulkan ICD for this session')
@@ -927,7 +948,8 @@ def main(argv=None):
                      sound_streams=args.sound_streams,
                      pauth_memo_entries=args.pauth_memo_entries,pauth_memo_stats=args.pauth_memo_stats,
                      pauth_algorithm=args.pauth_algorithm,
-                     webkit_timeout_diagnostic=args.webkit_timeout_diagnostic)
+                     webkit_timeout_diagnostic=args.webkit_timeout_diagnostic,
+                     sync_stats=args.sync_stats)
     except (ValueError, OSError, UIError) as error:
         print(f'COLD_BOOT_PREFLIGHT: {error}', file=sys.stderr)
         return 2

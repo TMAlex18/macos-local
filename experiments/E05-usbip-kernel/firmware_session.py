@@ -78,7 +78,7 @@ def tcg_accel_argument(mode:str='auto')->str:
 
 def cpu_model(pauth_algorithm:str='qarma5', *, pauth_memo:bool=False,
               pauth_memo_entries:int|None=None,pauth_memo_stats:bool=False,
-              webkit_timeout_diagnostic:bool=False)->str:
+              webkit_timeout_diagnostic:bool=False,sync_stats:bool=False)->str:
     """The exact -cpu value for one explicit QEMU PAuth algorithm."""
     if pauth_algorithm not in PAUTH_ALGORITHMS:
         raise ValueError('Unknown PAuth algorithm')
@@ -91,10 +91,13 @@ def cpu_model(pauth_algorithm:str='qarma5', *, pauth_memo:bool=False,
         raise ValueError('Memo capacity/statistics require PAuth memoization')
     if type(webkit_timeout_diagnostic) is not bool:
         raise ValueError('WebKit timeout diagnostic selection must be boolean')
+    if type(sync_stats) is not bool:
+        raise ValueError('Sync statistics selection must be boolean')
     return (f'max,pauth-{pauth_algorithm}=on,cntfrq=24000000,x-cntfrq-exact=on'
             + (',x-pauth-memo=on' if pauth_memo else '')
             + (f',x-pauth-memo-entries={pauth_memo_entries}' if pauth_memo_entries is not None else '')
             + (',x-pauth-memo-stats=on' if pauth_memo_stats else '')
+            + (',x-sync-stats=on' if sync_stats else '')
             + (',x-webkit-timeout-diagnostic=' + str(ROOT / 'private/webkit-watchdog-source/actual-26A434/timeout-profile-guard.json')
                if webkit_timeout_diagnostic else ''))
 
@@ -458,7 +461,8 @@ class FirmwareSession:
                  ram_gib:int=4,virtio_sound:bool=False,sound_backend:str='none',
                  sound_pcm_trace:bool=False,sound_queue_size:int|None=None,sound_streams:int|None=None,pauth_memo_entries:int|None=None,
                  pauth_memo_stats:bool=False,vcpu_affinity:str|None=None,
-                 webkit_timeout_diagnostic:bool=False,net_control_queue_size:int|None=None):
+                 webkit_timeout_diagnostic:bool=False,net_control_queue_size:int|None=None,
+                 sync_stats:bool=False):
         if type(vcpus) is not int or vcpus not in (2,4,8):
             raise ValueError('Only explicit 2/4/8-vCPU profiles are supported')
         self.vcpus=vcpus
@@ -518,8 +522,10 @@ class FirmwareSession:
         self.pauth_algorithm=pauth_algorithm
         self.cpu_model=cpu_model(pauth_algorithm,pauth_memo=pauth_memo,
                                  pauth_memo_entries=pauth_memo_entries,pauth_memo_stats=pauth_memo_stats,
-                                 webkit_timeout_diagnostic=webkit_timeout_diagnostic)
+                                 webkit_timeout_diagnostic=webkit_timeout_diagnostic,
+                                 sync_stats=sync_stats)
         self.webkit_timeout_diagnostic=webkit_timeout_diagnostic
+        self.sync_stats=sync_stats
         self.pauth_memo=pauth_memo
         self.pauth_memo_entries=pauth_memo_entries
         self.pauth_memo_stats=pauth_memo_stats

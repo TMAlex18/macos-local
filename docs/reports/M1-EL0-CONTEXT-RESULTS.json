@@ -443,7 +443,7 @@
     "Model-only build found unused direct-key helper under -Werror; helper now compiled only for the architecture profile."
   ],
   "observations": [
-    "All expected negative runs exited1 with their specific marker, never with host timeout.",
+    "All expected negative runs exited 1 with their specific marker, never with host timeout.",
     "Wrong-key runs observed ESR_EL1=0x72000000 in actual EL0 authentication failure.",
     "EL0-only page access, read-only code and UXN each generated specifically checked lower-EL permission faults.",
     "Opt-in HVC model restored expected privileged key bank on IRQ/SVC while preserving user signatures across resumption."

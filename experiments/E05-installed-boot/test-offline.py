@@ -495,7 +495,8 @@ class ColdBootTests(unittest.TestCase):
                 self.args[self.args.index('-object')+1]=f'memory-backend-memfd,id=ram,size={memory},share=on'
                 self.args[self.args.index('-cpu')+1]=boot.cpu_model(kwargs.get('pauth_algorithm','qarma5'),pauth_memo=kwargs.get('pauth_memo',False),
                     pauth_memo_entries=kwargs.get('pauth_memo_entries'),pauth_memo_stats=kwargs.get('pauth_memo_stats',False),
-                    webkit_timeout_diagnostic=kwargs.get('webkit_timeout_diagnostic',False))
+                    webkit_timeout_diagnostic=kwargs.get('webkit_timeout_diagnostic',False),
+                    sync_stats=kwargs.get('sync_stats',False))
                 if kwargs.get('usb_input'):
                     self.args += ['-device', 'qemu-xhci,id=input-xhci,addr=0x4',
                         '-device', 'usb-kbd,id=input-keyboard,bus=input-xhci.0,port=1',
@@ -598,7 +599,7 @@ class ColdBootTests(unittest.TestCase):
             'user_network':False,'exact_half_blend':False,'display_refresh_hz':None,'vcpus':2,'pauth_memo':False,'ram_gib':4,
             'virtio_sound':False,'sound_backend':'none','sound_pcm_trace':False,'sound_queue_size':None,'sound_streams':None,
             'pauth_memo_entries':None,'pauth_memo_stats':False,'vcpu_affinity':None,
-            'webkit_timeout_diagnostic':False,'net_control_queue_size':None})
+            'webkit_timeout_diagnostic':False,'net_control_queue_size':None,'sync_stats':False})
         for name in self.retained['files']:
             self.assertTrue(os.path.samefile(self.storage / name,
                 self.root / 'private/installed-boot/cold/storage' / name))
@@ -1311,6 +1312,53 @@ class ColdBootTests(unittest.TestCase):
         self.assertTrue(result['guest_files_service']['ready'])
         self.assertTrue(result['guest_files_service']['stopped'])
         self.assertEqual(instances[0].process.poll(), 0)
+
+    def test_sync_stats_cli_profile_and_build_guard(self):
+        self.assertNotIn('x-sync-stats', boot.cpu_model())
+        self.assertEqual(boot.cpu_model(), boot.cpu_model(sync_stats=False))
+        self.assertIn(',x-sync-stats=on', boot.cpu_model(sync_stats=True))
+        for value in (None, 1, 'on'):
+            with self.assertRaises(ValueError):
+                boot.cpu_model(sync_stats=value)
+        selected = list(self.args)
+        selected[selected.index('-cpu') + 1] = boot.cpu_model(sync_stats=True)
+        with self.assertRaises(ValueError):
+            boot.qemu_profile(selected)
+        with self.assertRaises(ValueError):
+            boot.qemu_profile(self.args, sync_stats=True)
+        self.assertTrue(boot.qemu_profile(selected, sync_stats=True)['sync_stats_requested'])
+
+        patchpath = self.root / boot.SYNC_STATS_PATCH
+        patchpath.parent.mkdir(parents=True, exist_ok=True)
+        patchpath.write_bytes(b'0033 sync stats implementation')
+        manifest = self.root / 'runs/qemu-bdif-usb-build.json'
+        record = {'binary_sha256': 'b' * 64, 'patches': [], 'patch_sha256': {}}
+        manifest.write_text(json.dumps(record))
+        with patch.object(boot, 'FirmwareSession') as session, \
+             patch.object(boot, 'require_fixed_qmp_build', return_value={'binary_sha256': 'b' * 64}):
+            with self.assertRaises(ValueError):
+                boot.run(self.label, 'sync-missing-patch', 1, sync_stats=True)
+            session.assert_not_called()
+
+        expected_sha = boot.hashlib.sha256(patchpath.read_bytes()).hexdigest()
+        record['patches'] = [boot.SYNC_STATS_PATCH]
+        record['patch_sha256'][boot.SYNC_STATS_PATCH] = expected_sha
+        manifest.write_text(json.dumps(record))
+        calls = {}
+        observer = SimpleNamespace(capture=lambda: {'capture_count': 1, 'runtime_evidence': {}})
+        with patch.object(boot, 'FirmwareSession', self.fake_session_factory(calls)), \
+             patch.object(boot, 'KernelBootObserver', return_value=observer), \
+             patch.object(boot, 'require_fixed_qmp_build', return_value={'binary_sha256': 'b' * 64}):
+            result = boot.run(self.label, 'sync-enabled', 1, sync_stats=True)
+        self.assertTrue(result['passed'])
+        self.assertTrue(calls['kwargs']['sync_stats'])
+        self.assertTrue(result['sync_stats_requested'])
+        self.assertTrue(result['current_qemu_profile']['sync_stats_requested'])
+        self.assertIn(',x-sync-stats=on', result['current_qemu_profile']['cpu'])
+        self.assertEqual(result['current_qemu_build']['sync_stats']['patch'], boot.SYNC_STATS_PATCH)
+        with patch.object(boot, 'run', return_value=result) as runner:
+            self.assertEqual(boot.main(['--source-run', self.label, '--sync-stats']), 0)
+            self.assertTrue(runner.call_args.kwargs['sync_stats'])
 
 
 if __name__ == '__main__':

@@ -64,9 +64,9 @@ CPU身份在每颗CPU初始化到只读的TPIDRRO_EL0，异常入口用MPIDR核�
 | 独立样本 | 结果与范围 |
 |---|---|
 | 16轮架构QARMA5，multi与single各一窗口 | 两任务均在两CPU运行，每窗口32次EL0 IRQ、32次迁移 |
-| TLS、Q30/Q31、key恢复负例 | 两模式下均为明确guest错误和exit1，未以宿主超时判通过 |
+| TLS、Q30/Q31、key恢复负例 | 两模式下均为明确guest错误和 exit 1，未以宿主超时判通过 |
 | 错误TTBR0恢复的收紧复验 | 两模式均识别；同时改变页表base和ASID，不是独立ASID-tag负例 |
-| 64轮架构QARMA5，两个模式 | 每任务每CPU32次IRQ，其中30—32次落在签名栈帧内；每窗口128次迁移 |
+| 64轮架构QARMA5，两个模式 | 每任务每CPU 32次IRQ，其中30—32次落在签名栈帧内；每窗口128次迁移 |
 | 原单核clock-exact正向回归 | 12轮通过；没有把历史44+4样本宣称为本次重跑 |
 | 显式软件key-context模型迁移 | 16轮multi/single正向及两模式wrong-key负例分别通过；每CPU独立初始化，正向各完成21次EL1 APIA bank检查 |
 | 原单核reims-model正向回归 | 模型初始化重构后12轮通过，保持该原配置的1GHz时钟 |
@@ -83,6 +83,6 @@ CPU身份在每颗CPU初始化到只读的TPIDRRO_EL0，异常入口用MPIDR核�
 
 每CPU还跟踪FP状态是否属于当前任务。尚未使用FP就再次收到IRQ时，保留任务已保存的状态，避免把CPU里旧任务的寄存器写回。lazy专用的整数前导实际等待第一次PPI27，因此这个分支在两CPU都被执行，并非仅靠检查代码推断。
 
-multi/single各一个16轮正向窗口通过：每CPU15次精确陷入和恢复，每个任务在两CPU均有7/8次FP trap，最终EL0 mask=3。遗漏恢复的两个负例由EL0完整数据比较报错，guest exit1，无host timeout；只有故障注入分支会停用本CPU定时器，让数据错误先于下一次EL1 owner检查报告。初版负例被owner检查提前拦截的原始记录保留，未作为最终数据比较证据。
+multi/single各一个16轮正向窗口通过：每CPU 15次精确陷入和恢复，每个任务在两CPU均有7/8次FP trap，最终EL0 mask=3。遗漏恢复的两个负例由EL0完整数据比较报错，guest exit 1，无host timeout；只有故障注入分支会停用本CPU定时器，让数据错误先于下一次EL1 owner检查报告。初版负例被owner检查提前拦截的原始记录保留，未作为最终数据比较证据。
 
 入口：`make el0-migration-lazy-fp-tests`。逐项原始路径见[结构化报告](M1-EL0-SIMD32-RESULTS.json)的 `cross_vcpu_migration.lazy_fp`。默认eager及model重编译的固件与先前输入逐字节一致；此次没有重复它们的运行矩阵。此结果不覆盖浮点算术异常、SVE/SME、真实OS或lazy模式与软件key模型的组合。

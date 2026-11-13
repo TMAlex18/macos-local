@@ -8,7 +8,7 @@ fresh RAM requested at 8 GiB. The observer verified one owned 8 GiB memfd
 Safari displayed the same host-served authored RGB fixture. The periodic QMP
 capture `screen-0017.ppm` shows the heading and all three color bars; exact
 primary-color counts are red 78,517, green 78,480 and blue 78,480, matching
-Runs94–96. Native screenshot control was unavailable under the busy guest,
+Runs 94–96. Native screenshot control was unavailable under the busy guest,
 and no watcher archive was received, so this is a page/pixel control rather
 than a WebKit timing result.
 

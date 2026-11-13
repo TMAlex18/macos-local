@@ -73,8 +73,8 @@ checkbox persistence from the apps already closed at Run107's end.
 
 The ordinary `r108fresh` trial confirmed Safari exit and used no guest stack
 sampling or periodic owner-stop sampler. Its watcher exited 0 and retained
-three Safari-owned GPU watchdog termination requests (GPU1691, GPU1835,
-GPU1887), zero default-audio-device absence error lines, and a native error
+three Safari-owned GPU watchdog termination requests (GPU 1691, GPU 1835,
+GPU 1887), zero default-audio-device absence error lines, and a native error
 page in `r108-safari-result.png`; no authored RGB success is claimed.
 
 Nine bounded `ps` and two `pgrep` observations timed out, but the WebKit stream

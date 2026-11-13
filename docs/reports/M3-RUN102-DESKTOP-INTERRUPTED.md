@@ -34,7 +34,7 @@ stack report or new initialization-latency conclusion from this run.
 
 ## Interruption and storage recovery
 
-Controller PID294068 and QEMU PID294079 subsequently disappeared. The QEMU
+Controller PID 294068 and QEMU PID 294079 subsequently disappeared. The QEMU
 log ends with signal 15 from the controller; the final collector record
 remained `observing` without an exit code or completed cleanup. That saved
 state does not establish a live VM. Guest shutdown, original-owner reap and

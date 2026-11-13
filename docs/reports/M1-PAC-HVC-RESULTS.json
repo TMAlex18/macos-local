@@ -132,7 +132,7 @@
       6,
       240
     ],
-    "key_derivation": "per-VM random secret, role-separated HMAC-SHA256 to128-bit key banks; local model choice",
+    "key_derivation": "per-VM random secret, role-separated HMAC-SHA256 to 128-bit key banks; local model choice",
     "patch": "patches/qemu-platform/0003-vmapple-tcg-pac-model-stack.patch",
     "patch_is_cumulative_replacing_0002": true,
     "migration_supported": false,

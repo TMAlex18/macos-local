@@ -1,0 +1,108 @@
+diff --git a/target/arm/cpregs.h b/target/arm/cpregs.h
+index c2baba1d47..b7c3f052f2 100644
+--- a/target/arm/cpregs.h
++++ b/target/arm/cpregs.h
+@@ -154,6 +154,11 @@ enum {
+      * ARM pseudocode function CheckFPMREnabled().
+      */
+     ARM_CP_FPMR                  = 1 << 23,
++    /*
++     * Flag: Read-only counter/timer view whose readfn is seqlock- and
++     * thread-local-safe without BQL when !icount_enabled().
++     */
++    ARM_CP_LOCKFREE_READ         = 1 << 24,
+ };
+ 
+ /*
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index b0e3d3ef1b..1042b86ef6 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -34,6 +34,7 @@
+ #include "timeout-diagnostic.h"
+ #ifdef CONFIG_TCG
+ #include "exec/translation-block.h"
++#include "exec/icount.h"
+ #include "accel/tcg/cpu-ops.h"
+ #endif /* CONFIG_TCG */
+ #include "internals.h"
+@@ -1367,7 +1368,10 @@ static char *arm_get_sync_stats_json(Object *obj, Error **errp)
+                 continue;
+             }
+             const char *rname = ri->name ? ri->name : "unnamed";
+-            GHashTable *dest = (ri->type & ARM_CP_IO) ? io_map
++            bool bql_io = (ri->type & ARM_CP_IO) &&
++                          !((ri->type & ARM_CP_LOCKFREE_READ) &&
++                            !icount_enabled());
++            GHashTable *dest = bql_io ? io_map
+                                : (is_tlbi_reg_name(rname) ? tlbi_map : other_map);
+             uint64_t *slot = g_hash_table_lookup(dest, rname);
+             if (!slot) {
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index d422c43e2b..e807825d8e 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -2332,23 +2332,27 @@ static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
+     },
+     /* The counter itself */
+     { .name = "CNTPCT", .cp = 15, .crm = 14, .opc1 = 0,
+-      .access = PL0_R, .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_LOCKFREE_READ,
+       .accessfn = gt_pct_access,
+       .readfn = gt_cnt_read,
+     },
+     { .name = "CNTPCT_EL0", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 3, .crn = 14, .crm = 0, .opc2 = 1,
+-      .access = PL0_R, .type = ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_LOCKFREE_READ,
+       .accessfn = gt_pct_access, .readfn = gt_cnt_read,
+     },
+     { .name = "CNTVCT", .cp = 15, .crm = 14, .opc1 = 1,
+-      .access = PL0_R, .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_LOCKFREE_READ,
+       .accessfn = gt_vct_access,
+       .readfn = gt_virt_cnt_read,
+     },
+     { .name = "CNTVCT_EL0", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 3, .crn = 14, .crm = 0, .opc2 = 2,
+-      .access = PL0_R, .type = ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_LOCKFREE_READ,
+       .accessfn = gt_vct_access, .readfn = gt_virt_cnt_read,
+     },
+     /* Comparison value, indicating when the timer goes off */
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+index 077e24c8e0..a35abf1152 100644
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -26,6 +26,7 @@
+ #include "cpu-features.h"
+ #include "accel/tcg/cpu-loop.h"
+ #include "accel/tcg/probe.h"
++#include "exec/icount.h"
+ #include "cpregs.h"
+ 
+ #define SIGNBIT (uint32_t)0x80000000
+@@ -1281,7 +1282,8 @@ uint32_t HELPER(get_cp_reg)(CPUARMState *env, const void *rip)
+     CPUState *cs = env_cpu(env);
+     uint32_t res;
+ 
+-    if (ri->type & ARM_CP_IO) {
++    if ((ri->type & ARM_CP_IO) &&
++        !((ri->type & ARM_CP_LOCKFREE_READ) && !icount_enabled())) {
+         bql_lock();
+         if (unlikely(cs->sync_stats)) {
+             qatomic_set(&cs->sync_stats_counters.bql_cpreg_read,
+@@ -1328,7 +1330,8 @@ uint64_t HELPER(get_cp_reg64)(CPUARMState *env, const void *rip)
+     CPUState *cs = env_cpu(env);
+     uint64_t res;
+ 
+-    if (ri->type & ARM_CP_IO) {
++    if ((ri->type & ARM_CP_IO) &&
++        !((ri->type & ARM_CP_LOCKFREE_READ) && !icount_enabled())) {
+         bql_lock();
+         if (unlikely(cs->sync_stats)) {
+             qatomic_set(&cs->sync_stats_counters.bql_cpreg_read,

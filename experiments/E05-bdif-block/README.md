@@ -5,7 +5,7 @@
 and readback; after exit the host checks bytes, neighboring sentinels and
 unchanged file length. Apple code and real user disks are not used.
 
-Cases: AUX offset16MiB512B write, ROOT write, exact-end sector, read-only,
+Cases: AUX offset 16 MiB + 512 B write, ROOT write, exact-end sector, read-only,
 beyond-end, invalid DMA data, unsupported flags, invalid completion address,
 and unreadable request descriptor. All final cases pass. Preserved pre-fix
 binary fails the positive AUX-write test; no fake success is returned.

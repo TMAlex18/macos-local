@@ -10,7 +10,7 @@ benchmark.
 ## Earlier triggers did not establish initialization-stack coverage
 
 The fresh `r103window` trial confirmed Safari exit before relaunch, matched
-Safari ownership of GPU886, and invoked a 45-second sample at 20 ms intervals
+Safari ownership of GPU 886, and invoked a 45-second sample at 20 ms intervals
 with `-mayDie`. The report records Date/Time 17:37:05.629 UTC and sample exit
 0, but its Call graph has **zero nonblank lines**. Metadata, image lists and
 a successful sampler exit do not establish that any stack was collected.
@@ -21,7 +21,7 @@ Termination requests alone do not prove when each target actually exited.
 The separate `r103burst` diagnostic triggered at the first GPU constructor
 event and checked Safari ownership afterward in the same retained log:
 
-| GPU1788 event | UTC | WebKit log line |
+| GPU 1788 event | UTC | WebKit log line |
 |---|---|---:|
 | Constructor | 17:58:09.182 | 116 |
 | Safari ownership confirmed | 17:58:29.659 | 219 |
@@ -41,7 +41,7 @@ timing gap but did not produce initialization stacks.
 - A persistent owned `zsh` process produced a nonempty one-second sample:
   41 main-thread samples in `__sigsuspend`. The sampling path can return
   stacks for a stable process.
-- GPU1030, GPU1123 and GPU1279 produced 500, 400 and 503 main-thread samples
+- GPU 1030, GPU 1123 and GPU 1279 produced 500, 400 and 503 main-thread samples
   about ten minutes after the watchdog events. Their respective paths include
   Opus registration/AudioComponent registry deserialization, rendering-backend
   allocation, and VP9/Metal plugin loading/dyld lookup. Each report repeats
@@ -50,7 +50,7 @@ timing gap but did not produce initialization stacks.
   initialization work or its cost**.
 - The old three PIDs were absent after a later Safari quit/relaunch. Their
   earlier Mach suspension state remains unknown. At 18:07 UTC, launchd listed
-  a new Safari-owned GPU2129 as running, never exited and not start-suspended,
+  a new Safari-owned GPU 2129 as running, never exited and not start-suspended,
   but Mach inspection returned `0x5` even with sudo. This does not classify
   the earlier PIDs or prove their termination timing.
 

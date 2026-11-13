@@ -14,7 +14,7 @@ contain this error, so it is not unique to the recorded input attempt.
 
 At 14:15 UTC the controller (259424), QEMU (259436), and owned file service
 (259427) were all absent from `/proc`. The QEMU log ends with termination
-on signal 15 from controller PID259424. The final collector write was at
+on signal 15 from controller PID 259424. The final collector write was at
 13:02:13 UTC. The collector and retention records remained unfinished;
 their `observing` state does not describe a live process now. Neither an
 exit status, successful reap by the original owner, guest-origin shutdown,

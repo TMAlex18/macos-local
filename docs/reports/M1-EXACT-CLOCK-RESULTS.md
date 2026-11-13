@@ -46,7 +46,7 @@
 
 ## 4. 隔离、复现和边界
 
-`build/qemu-clock-exact/qemu-system-aarch64` 使用upstream pin `1a72df984914fb9929d35b1217619178133d65a4` + patch0003 + patch0005；与正常主线、headless负对照分离。此branch不包含AVP RTC/CTRR占位patch0004。
+`build/qemu-clock-exact/qemu-system-aarch64` 使用 upstream pin `1a72df984914fb9929d35b1217619178133d65a4` + patch 0003 + patch 0005；与正常主线、headless 负对照分离。此 branch 不包含 AVP RTC/CTRR 占位 patch 0004。
 
 `max,cntfrq=24000000,x-cntfrq-exact=on` 才开启精确模式；默认off。没有改写主线默认频率或已有guest bundle。迁移、动态改频、KVM、全EL/多核时间同步和目标Apple OS仍未验证。
 

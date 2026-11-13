@@ -22,7 +22,8 @@ BASE=ROOT/'experiments/E06-platform-contracts'
 BUILD=ROOT/'build/e06-smp-mmu'
 TARGETS={
  'headless':('build/qemu-vmapple-headless/qemu-system-aarch64','vmapple,gfx-device=none,memory-backend=ram'),
- 'reims':('build/qemu-reims-arm16k/qemu-system-aarch64','vmapple,memory-backend=ram')}
+ 'reims':('build/qemu-reims-arm16k/qemu-system-aarch64','vmapple,memory-backend=ram'),
+ 'mainline':('build/qemu-bdif-usb/qemu-system-aarch64','vmapple,memory-backend=ram')}
 CASES={
  'positive':([],0,'E06 SMP16K ASID TLBI PERMISSION ATOMIC PASS'),
  'wrong-map':(['-DOMIT_REMAP=1'],1,'FAIL: REMOTE_TRANSLATION_WRONG'),

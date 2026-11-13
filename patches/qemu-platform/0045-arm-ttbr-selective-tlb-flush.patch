@@ -1,0 +1,152 @@
+From: macos-local research
+Subject: [PATCH] Selective EL1&0 lower-half SoftMMU TLB flush on TTBR0_EL1 ASID switch
+
+Preserve ARMMMUIdx_Phys_NS and TTBR1_EL1 upper-half kernel SoftMMU TLB
+entries across AArch64 TTBR0_EL1 ASID switches when EL2/EL3 are absent and
+TCR_EL1.A1 / TCR2_EL1.FNGNA1 are zero.
+
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -268,6 +268,7 @@
+     desc->large_page_addr = -1;
+     desc->large_page_mask = -1;
+     desc->has_16k_pages = false;
++    desc->has_lower_half55 = false;
+     desc->vindex = 0;
+     memset(fast->table, -1, sizeof_tlb(fast));
+     memset(desc->vtable, -1, sizeof(desc->vtable));
+@@ -398,6 +399,66 @@
+     assert_cpu_is_self(cpu);
+ 
+     tlb_flush_by_mmuidx_async_work(cpu, RUN_ON_CPU_HOST_INT(idxmap));
++}
++
++static inline bool tlb_entry_is_lower_half55(const CPUTLBEntry *te)
++{
++    uint64_t r = te->addr_read;
++    uint64_t w = tlb_addr_write(te);
++    uint64_t c = te->addr_code;
++    uint64_t sample = (r != (uint64_t)-1) ? r
++                      : (w != (uint64_t)-1) ? w : c;
++
++    return sample != (uint64_t)-1 && !(sample & (1ULL << 55));
++}
++
++void tlb_flush_lower_half55_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap)
++{
++    MMUIdxMap to_check;
++    int64_t now = 0;
++
++    assert_cpu_is_self(cpu);
++
++    qemu_spin_lock(&cpu->neg.tlb.c.lock);
++    to_check = idxmap & cpu->neg.tlb.c.dirty;
++    for (MMUIdxMap work = to_check; work != 0; work &= work - 1) {
++        int mmu_idx = ctz32(work);
++        CPUTLBDesc *desc = &cpu->neg.tlb.d[mmu_idx];
++        CPUTLBDescFast *fast = cpu_tlb_fast(cpu, mmu_idx);
++
++        if (!desc->has_lower_half55) {
++            continue;
++        }
++        if (desc->large_page_addr != (vaddr)-1 &&
++            (!(desc->large_page_mask & (1ULL << 55)) ||
++             !(desc->large_page_addr & (1ULL << 55)))) {
++            if (!now) {
++                now = get_clock_realtime();
++            }
++            tlb_flush_one_mmuidx_locked(cpu, mmu_idx, now);
++            cpu->neg.tlb.c.dirty &= ~(1 << mmu_idx);
++            continue;
++        }
++        size_t n = tlb_n_entries(fast);
++        for (size_t i = 0; i < n; i++) {
++            if (tlb_entry_is_lower_half55(&fast->table[i])) {
++                memset(&fast->table[i], -1, sizeof(fast->table[i]));
++                if (desc->n_used_entries > 0) {
++                    desc->n_used_entries--;
++                }
++            }
++        }
++        for (size_t k = 0; k < CPU_VTLB_SIZE; k++) {
++            if (tlb_entry_is_lower_half55(&desc->vtable[k])) {
++                memset(&desc->vtable[k], -1, sizeof(desc->vtable[k]));
++                if (desc->n_used_entries > 0) {
++                    desc->n_used_entries--;
++                }
++            }
++        }
++        desc->has_lower_half55 = false;
++    }
++    qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+ }
+ 
+ void tlb_flush(CPUState *cpu)
+@@ -1205,6 +1266,9 @@
+     } else {
+         sz = (hwaddr)1 << full->lg_page_size;
+         tlb_add_large_page(cpu, mmu_idx, addr, sz);
++    }
++    if (!(addr & (1ULL << 55))) {
++        desc->has_lower_half55 = true;
+     }
+     addr_page = addr & TARGET_PAGE_MASK;
+     paddr_page = full->phys_addr & TARGET_PAGE_MASK;
+diff --git a/include/exec/cputlb.h b/include/exec/cputlb.h
+--- a/include/exec/cputlb.h
++++ b/include/exec/cputlb.h
+@@ -174,6 +174,7 @@
+  * MMU indexes.
+  */
+ void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap);
++void tlb_flush_lower_half55_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap);
+ 
+ /**
+  * tlb_flush_by_mmuidx_all_cpus_synced:
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -285,6 +285,7 @@
+     vaddr large_page_addr;
+     vaddr large_page_mask;
+     bool has_16k_pages;
++    bool has_lower_half55;
+     /* host time (in ns) at the beginning of the time window */
+     int64_t window_begin_ns;
+     /* maximum number of entries observed in the window */
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -2984,8 +2984,29 @@
+     /* If the ASID changes (with a 64-bit write), we must flush the TLB.  */
+     if (cpreg_field_type(ri) == MO_64 &&
+         extract64(raw_read(env, ri) ^ value, 48, 16) != 0) {
+-        ARMCPU *cpu = env_archcpu(env);
+-        tlb_flush(CPU(cpu));
++        CPUState *cs = env_cpu(env);
++        if (likely(is_a64(env) &&
++                   !arm_feature(env, ARM_FEATURE_EL2) &&
++                   !arm_feature(env, ARM_FEATURE_EL3))) {
++            if (ri->opc2 == 0 &&
++                !(env->cp15.tcr_el[1] & TTBCR_A1) &&
++                !(env->cp15.tcr2_el[1] & TCR2_FNGNA1)) {
++                tlb_flush_by_mmuidx(cs, ARMMMUIdxBit_E10_0 |
++                                        ARMMMUIdxBit_E10_0_GCS);
++                tlb_flush_lower_half55_by_mmuidx(cs,
++                    ARMMMUIdxBit_E10_1 |
++                    ARMMMUIdxBit_E10_1_PAN |
++                    ARMMMUIdxBit_E10_1_GCS);
++            } else {
++                tlb_flush_by_mmuidx(cs, ARMMMUIdxBit_E10_0 |
++                                        ARMMMUIdxBit_E10_0_GCS |
++                                        ARMMMUIdxBit_E10_1 |
++                                        ARMMMUIdxBit_E10_1_PAN |
++                                        ARMMMUIdxBit_E10_1_GCS);
++            }
++        } else {
++            tlb_flush(cs);
++        }
+     }
+     raw_write(env, ri, value);
+ }

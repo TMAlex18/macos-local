@@ -43,40 +43,57 @@ Intel iGPU, Ubuntu 26.04.1. Host 2 (desktop) is not yet chosen.
   Intel GPUs, automatic DHCP and HTTP, the VirtIO sound device as the
   CoreAudio default device with bit-exact PCM output in some runs, and a fixed
   WebGL2 shader whose raw readback matches an independent oracle byte for byte.
-- **Latest run with a new result:** Run128
-  renders one fixed WebGL2 shader in actual macOS Safari; both 96×64 RGBA8
-  readbacks (24,576 bytes each) match the oracle. With the opt-in 30-second
-  diagnostic, the first Safari GPU connection initializes 3.781 s after the UI
-  request and no GPU watchdog fires. This is not a pass of WebKit's original
-  3-second deadline: the diagnostic's second site was never hit and two
-  WebProcess unresponsive notifications remain. The guest shut itself down;
-  filesystem cleanliness is unproven.
+- **Latest runs with new results:** [Run149 and Run150](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.en.md)
+  omit the 30-second timeout diagnostic completely (`webkit_timeout_diagnostic`
+  off) on the `0033–0045` synchronization- and throughput-optimized QEMU build:
+  - On a quiet guest (**Run149**, `+976 s`), cold first-launch Safari initializes
+    its first GPU connection in **`2.734 s` (`0` GPU watchdog exits — strictly
+    below WebKit's unmodified `3.000 s` deadline without needing UIProcess
+    runloop slack)** and passes both 96×64 RGBA8 WebGL2 readbacks (24,576 bytes
+    each) byte for byte (`1.679 s` on the second launch).
+  - Even without waiting for quiet (**Run150**, triggered directly at **`+720 s`**
+    during post-login background saturation at `vcpu_mean_busy = 6.32`), cold
+    first-launch Safari initializes with **`0` GPU watchdog exits** (`3.254 s`
+    log span, within unmodified UIProcess runloop delivery) and passes both
+    WebGL2 readbacks byte for byte (**5/5** across five diagnostic-off cold boots;
+    **8/8** consecutive zero-watchdog fresh launches across Run148–150; `1.662 s`
+    at `+1020 s`). Both runs shut down cleanly from inside macOS; filesystem
+    cleanliness remains unproven.
 - **Current work:** active again from 2026-11-10.
-  Runs 130–142 timed Safari's first GPU connection under the diagnostic. The
-  first launch after boot takes 3.4–3.8 s, a second launch 2.8–3.4 s, and
-  neither the
-  [PAC algorithm](docs/reports/M3-PAC-ALGORITHM-GPU-INIT-TIMING.en.md) nor the
-  [guest RAM size](docs/reports/M3-RAM-SIZE-GPU-INIT-TIMING.en.md) changes that.
-  [Host-side sampling](docs/reports/M3-GPU-INIT-HOST-CPU-USE.en.md) shows the
-  guest saturated at that moment: for about 20 minutes after login all eight
-  vCPUs are busy with background work. On a
-  [guest that has gone quiet](docs/reports/M3-QUIET-GUEST-GPU-INIT-TIMING.en.md)
-  the numbers are 3.25 s and 2.59 s, because a Safari launch saturates the
-  vCPUs by itself. While the guest is busy the vCPU threads lose 14–30% of
-  their time waiting for QEMU's global lock and for stop-the-world sections.
-  Next is to find what triggers those waits and patch the largest sources,
-  and a repeat of the native restore on the current binary.
+  Runs 130–142 localized Safari's GPU-initialization delay to guest saturation
+  plus 14–30% vCPU stall time on QEMU's global lock (`bql`) and stop-the-world
+  sections ([PAC algorithm](docs/reports/M3-PAC-ALGORITHM-GPU-INIT-TIMING.en.md),
+  [guest RAM size](docs/reports/M3-RAM-SIZE-GPU-INIT-TIMING.en.md),
+  [host CPU sampling](docs/reports/M3-GPU-INIT-HOST-CPU-USE.en.md),
+  [quiet guest](docs/reports/M3-QUIET-GUEST-GPU-INIT-TIMING.en.md)).
+  Runs 143–146 ([sync-sources report](docs/reports/M3-QEMU-SYNC-SOURCES.en.md))
+  counted exact BQL/exclusive trigger sources (`0033`) and landed six patches
+  (`0034–0039`), cutting saturated BQL acquisitions by 90% and raising vCPU
+  running/runnable share to **96.6%** (3.4% blocked). Runs 147–150
+  ([throughput report](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.en.md))
+  profiled the remaining 80–81% C-helper execution cycles (`perf`) and landed
+  six pure-throughput patches (`0040–0045`: selective `CF_PCREL` jump-cache
+  invalidation + 256 page buckets, 16 KiB subpage SoftMMU invalidation + `!EL2`
+  inline fast paths, PAuth VA cache + SSSE3 `pshufb` QARMA5, SME `do_fmopa_h`
+  pre-unpacking, host-RAM-tagged persistent `CPUJumpCache` across context
+  switches, and selective `TTBR0_EL1` flushes preserving `Phys_NS` and `TTBR1`
+  kernel TLBs), raising guest `[JIT]` P-core share by **78.4%** (`13.52% → 24.12%`),
+  pushing quiet-guest diagnostic-off cold launch strictly below `3.000 s`
+  (`2.734 s`), and passing `+720 s` peak-load diagnostic-off cold launch with
+  `0` watchdog exits (`3.254 s`). Next is repeating a full native restore on the
+  current `0045` mainline binary (requires root) and broader application/Metal
+  validation.
   Mainline is `build/qemu-bdif-usb/qemu-system-aarch64`, SHA256
-  `4a433616dc04e90ba41d720fe0dfb8925294799eff94a6eef24b52108a6b4d66`, with
-  the patch chain through 0032; see the
+  `f858a94a8d7395456679a9c05c2c0dd2d6ee56f8701525e47bbf7ed9ee85f474`, with
+  the patch chain through 0045; see the
   build manifest and [STATUS](docs/STATUS.en.md).
 - **Open problems** (evidence and a per-run table are in
   [RESULTS section 2](docs/RESULTS.en.md)):
-  - *Safari first load.* Under TCG a fresh GPU process misses WebKit's
-    3-second watchdog; stackshots show it waiting for the audio SandboxHelper
-    to start at that point. RAM size, PAC memoization and several other
-    controls did not fix it; only the default-off 30-second diagnostic gets
-    past it (Runs 127–128).
+  - *Peak-load nominal `< 3.000 s` margin.* Quiet-guest diagnostic-off cold
+    first launch strictly clears `< 3.000 s` (`2.734 s`, Run149), and `+720 s`
+    peak-load diagnostic-off cold launch passes with `0` watchdog exits (`3.254 s`,
+    Run150, 2 WebProcess notices), though its log span still relies on ~`0.26 s`
+    of UIProcess runloop timer slack under heavy background load.
   - *Audio.* PCM output is complete in some runs and drops frames in others;
     the cause is unknown.
   - *Host side.* Vulkan `DeviceLost`, one i915 GPU hang and two unexpected
@@ -157,6 +174,7 @@ profile and private prerequisites. Tags:
 | `el0-migration-tests`, `el0-migration-extended` | E06 two-vCPU EL0 context migration under both TCG modes |
 | `pauth-baseline`, `pauth-model`, `pauth-model-impdef`, `pauth-guards` | E06 PAC and opt-in HVC software model |
 | `pauth-cost-bench` | E06 per-call TCG cost of PACIBSP/RETAB |
+| `sync-counter-tests` | E06 per-vCPU TCG BQL and exclusive-section trigger counters (`0033`) |
 | `clock-math`, `clock-functional`, `clock-rate-exact`, `clock-check`, `clock-rate-baseline` | E06 clock |
 | `bdif-usb-tests`, `bdif-usb-backpressure`, `bdif-usb-control`, `bdif-block-tests` | E05 transport with a self-written guest |
 | `config-mailbox-tests`, `avp-rtc-tests` | self-written guests for the configuration DMA and RTC contracts |
