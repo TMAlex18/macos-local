@@ -404,6 +404,18 @@ class Fixture(unittest.TestCase):
         self.assertEqual(path.read_bytes(),before)
         self.assertTrue(result['release_confirmed'])
 
+    def test_paced_secret_input_applies_hold_and_gap_and_validates_bounds(self):
+        path=self.secret_file();self.server_start();sleeps=[]
+        with patch.object(ui.time,'sleep',side_effect=sleeps.append),ui.GuestUI(self.label) as client:
+            with patch.object(ui,'private_value') as private:
+                with self.assertRaises(ui.UIError):client.type_secret(path,'password',hold=0.0)
+                with self.assertRaises(ui.UIError):client.type_secret(path,'password',gap=-0.1)
+                private.assert_not_called()
+            result=client.type_secret(path,'password',hold=0.35,gap=0.25)
+        self.assertTrue(result['release_confirmed'])
+        self.assertEqual(sleeps[:4],[0.35,0.25,0.35,0.25])
+        self.assertNotIn('S3cr!t-OnlyFixture',(self.logs/'ui-actions.jsonl').read_text())
+
     def test_secret_failure_is_redacted_and_keeps_unknown_effect_receipt(self):
         path=self.secret_file();self.server_start('drop')
         with ui.GuestUI(self.label) as client,self.assertRaises(ui.UIError) as caught:

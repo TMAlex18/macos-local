@@ -1,3 +1,15 @@
+From: macos-local research
+Subject: [PATCH] Elide the BQL around exception-return hooks when none needs it
+
+HELPER(exception_return) took the BQL twice per ERET to run the
+EL-change hooks. Count the hooks that need the BQL and take it only when
+there is one, or when the PMU is counting (PMCR.E with an enabled
+counter, or EL2 present); the PMU hooks return early otherwise, because
+counter state is re-based when a counter is enabled. Register the GICv3
+CPU-interface hook only when EL2 or EL3 exists, since without them its
+IRQ/FIQ routing does not depend on the EL, and register the vmapple PAC
+hook as lock-free.
+
 diff --git a/hw/intc/arm_gicv3_cpuif.c b/hw/intc/arm_gicv3_cpuif.c
 index 67a0bba4b0..2a7e6b58c9 100644
 --- a/hw/intc/arm_gicv3_cpuif.c

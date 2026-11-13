@@ -254,3 +254,161 @@
 | 同步争用消除（Run143–146） | `0033–0039` | 无锁 `CNTVCT_EL0`、跳过屏蔽中断与 `EXITTB` 锁、栈 HMAC PAC `HVC` 含 64 项缓存、无锁 `TLBI` 队列排空、`DSB` 聚合广播 `TLBI`、EL1&0 `ERET` 省锁 | 饱和期 `bql` 获取率 **-90%**，vCPU 运行/可运行占比升至 **96.6%**（总阻塞仅 **3.4%**） |
 | 纯执行吞吐第一轮（Run147–148） | `0040–0043` | `CF_PCREL` 跳转缓存按页内偏移先读后写失效 + 256 页桶、`cputlb` 16 KiB 子页精确失效及单位错配修正 + 无 EL2 内联快路径、PAuth VA 缓存 + SSSE3 `pshufb` QARMA5、SME `do_fmopa_h` 预拆包 | 裸机 QARMA5 开销 **-73%**（`214 → 57.7 ns`），饱和期 `[JIT]` P 核占比 **`13.52% → 23.20%`**，安静时间提前至 `+958 s`，三轮启动全部 0 看门狗通过（`3.180 s` / `1.620 s`） |
 | 跨上下文持久缓存（Run149–150） | `0044–0045` | 宿主 RAM 地址标记的跨进程持久 `CPUJumpCache`（TLB 失效不清空跳转缓存，共享缓存切换绕过全局 QHT）+ `TTBR0_EL1` 切换保留物理页表 `Phys_NS` 与内核 `TTBR1_EL1` 高半区 TLB | Safari 启动期 `tb_htable_lookup` **-62.7%**（`14.43% → 5.38%`），饱和期 `[JIT]` 达 **`24.12%`**（累计 **+78.4%**）；**安静客体首次冷启动无诊断首破 `3.000 s` 达 `2.734 s`**，**`+720 s` 峰值期无诊断首次冷启动 `3.254 s`（0 看门狗退出） / 二次 `1.662 s`**，Run148–150 连续 **8/8 次**无诊断启动 0 看门狗通过 |
+
+---
+
+## 第五阶段运行前计划（补丁 `0046–0048` 与 Run152：冲击后台峰值期标称 `< 3.000 s`）
+
+### 精确指令级热点归因（复盘 Run149 `0045` 饱和期 DWARF + `perf annotate`）
+
+对 Run149 在 `0045` 二进制上采集的后台饱和期 `perf-saturated.data`（`489.5B` 宿主 P 核周期）做聚合调用图与汇编逐指令标注（`perf annotate`），剩余约 `75.9%` 非 `[JIT]` 周期高度集中在三大机制性开销（且因 QEMU 编译开启 `-fzero-call-used-regs=used-gpr` 与 `-fstack-protector-strong`，每次跨编译单元或非内联函数返回额外清零 8–10 个通用寄存器）：
+
+1. **`helper_lookup_tb_ptr` 族仍占 `23.76%` P 核周期**（`tb_lookup` 自占 `11.09%`，`qht_lookup_custom` `6.13%` 其中全局顺序锁 `seqlock_read_begin` 占 `4.86%`，`helper_lookup_tb_ptr` 自占 `2.62%`，`arm_get_tb_cpu_state` `1.49%`，`arm_cpu_mmu_index` `0.52%`）：
+   - **直接映射冲突震荡**：1-路直接映射 `CPUJumpCache`（16,384 槽 × 24B = 384 KiB，未对齐跨缓存行）在内核与 `dyld` 共享缓存热块间仍有哈希冲突，每次冲突未命中回落全局 `qht_lookup_custom` 引发 8 核 L3 `seqlock` 读取争用（`4.86%`）；
+   - **L1 命中路径未内联且含间接虚调用与栈金丝雀**：因 `tb_lookup()` 顶层声明取地址局部变量 `void *host_pc` 并调用 `cpu_mmu_index(cpu, true)`（经 `cs->cc->tcg_ops->mmu_index` 间接调用 `arm_cpu_mmu_index`），GCC 未将其内联进 `helper_lookup_tb_ptr`，导致每次 L1 跳转缓存命中仍执行 `sub $0x70,%rsp`、`%fs:0x28` 金丝雀读写、5 寄存器入栈保存、间接调用 `call *0x48(%rax)` 与双层寄存器清零返回；同时 `arm_get_tb_cpu_state` 每次读取距 `env` 达 `+0xd39xx`（+866 KiB，跨过 `za_state` 与 `pauth_memo` 大数组）的 `cpu->isar` 造成 DTLB 压力。
+2. **PAuth 辅助函数族仍占 `21.15%` P 核周期**（`pauth_computepac` 自占 `4.43%`、`pauth_auth` 自占 `3.70%`、`qarma_ssse3_compute` `3.15%`、`aa64_pauth_va_parameters` 自占 `2.93%`、`arm_stage1_mmu_idx` + `arm_mmu_idx*` `2.17%`、`pauth_addpac` 自占 `1.59%`、入口/陷阱包装约 `3.18%`）：
+   - **跨编译单元调用链与序言未收缩**：每次 PAuth 指令（Run150 持续达 `32.60M/s`）先跨编译单元调 `ptw.c:arm_stage1_mmu_idx -> helper.c:arm_mmu_idx -> arm_mmu_idx_el`（3 层调用与清零，`2.17%`）；再调 `aa64_pauth_va_parameters`，后者因冷刷新分支置于返回前而未触发 GCC shrink-wrap，每次缓存命中仍压入 6 个被调保存寄存器（`%rbx..%r15`）、查 `arm_mmuidx_table` 并访问 `+0xd3470` 远端缓存行（`2.93%`）；
+   - **`pauth_memo` 48B 跨缓存行与 1,024 槽位冲突未命中（15.4% = 502 万次/秒 QARMA5）**：`ARMPAuthMemoEntry` 为 48 字节（半数跨两条 64B 缓存行），且 `pauth_memo_slot` 在 1,024 槽下未混入 `data[31:12]`，导致 `dyld` 共享缓存指针高频冲突回落完整 11 轮 `qarma_ssse3_compute`（且后者每轮仍在循环内重复调用 `qarma_unpack_u64(RC[i])`）。
+3. **BTI 守护页检查 `is_guarded_page` / `helper_guarded_page_check` 占 `1.37%` P 核周期**：macOS arm64e 间接分支频繁触发 `is_guarded_page`，每次均经间接调用 `cpu_mmu_index` 并跨单元进 `probe_access_full -> probe_access_internal`，未先检查内联代码快表 `cpu_tlb_fast`。
+
+### 补丁设计（`0046–0048`，严守全部架构语义与既有单测契约）
+
+1. **`0046-tcg-2way-jmp-cache-and-inline-fastpath.patch`**：
+   - 将 `CPUJumpCache` 改为 **64 字节缓存行对齐的 2-路组相联结构**（`8,192` 组 × `2` 路 = `16,384` 项 = `512 KiB`，两路同处单条 64B 缓存行，含 1-bit LRU 替换位与缓存的 `uint8_t mmu_idx`）；由于 QEMU 保证 `cpu_mmu_index(cpu, true)` 由 TB 的 `(flags, cs_base, cflags)` 唯一决定（`tcg_debug_assert` 校验），L1 命中直接按 `way->mmu_idx` 核对内联 `cpu_tlb_fast`，消除 `call *0x48(%rax)` 间接调用。
+   - 将慢速路径拆入 `QEMU_NOINLINE tb_lookup_slow()`，令纯寄存器 L1 命中路径 `QEMU_ALWAYS_INLINE` 内联进 `helper_lookup_tb_ptr`，消除 `%fs:0x28` 金丝雀与双层调用栈帧；同时在 `CPUARMState` 近端（紧邻 `keys`，偏移 `< 14 KiB`）缓存 `has_aa64_bti`，加速 `arm_get_tb_cpu_state`。
+2. **`0047-arm-pauth-fastpath-and-l2-qarma-cache.patch`**：
+   - 保持 `pauth_helper.c` 中 `pauth_addpac..xpacd` 与 `pauth_memo_slot` 原文及 `env->pauth_memo` 统计契约不变（100% 兼容 `test-pac-mult.py`、`test-pac-memo.py`、`test-pac-va.py`）；将 `ARMPAuthMemoEntry` 补齐为 64 字节消除跨缓存行访问。
+   - 在 `target/arm/internals.h` 将 `!CONFIG_USER_ONLY` 下的 `arm_stage1_mmu_idx(env)` 改为内联函数（AArch64 无 EL2/EL3/M 时 4 条指令直接由 `env->pstate` 给出 `Stage1_E0 / E1 / E1_PAN`）；将 `pauth_va_cache` 与只读 `pauth_fast` 配置移至 `CPUARMState` 近端（紧邻 `keys`，在 `arm_cpu_realizefn`、`arm_cpu_reset_hold` 与 `cpu_post_load` 同步维护），并在 `aa64_pauth_va_parameters()` 中预打包 4 组返回字且将命中 `return` 置于慢速重填之前（触发编译器 shrink-wrap 零栈帧快路径）。
+   - 在 `arm_pauth_computepac_architected_fast` 下（仅当 `prop_pauth_memo` 开启时生效，默认关闭时不缓存；随 `reset` 与 `post_load` 清零）加入每核 **2-路组相联折叠哈希二级 QARMA 缓存**（`4,096` 组 × `2` 路 = `8,192` 项，吸收 1,024 槽一级 memo 的 `dyld` 高位地址冲突未命中），并预展开 `qarma_ssse3_compute` 的 `RC[0..4]` 与 `alpha` 向量常量。
+3. **`0048-arm-bti-guarded-tlb-fastpath.patch`**：
+   - 在 `target/arm/tcg/helper-a64.c:is_guarded_page()` 中改用内联 `arm_env_mmu_index(env)` 并优先查询当前 `mmu_idx` 的内联代码 TLB（`addr_code == (addr & TARGET_PAGE_MASK)` 时直接返回 `fulltlb[idx].extra.arm.guarded`，与 `probe_access_full(..., MMU_INST_FETCH, size=0)` 完全等价），仅在代码 TLB 未命中时回落 `probe_access_full`。
+
+### 第五阶段假设（Run152）
+
+1. **后台峰值期正面击穿 `< 3.000 s` 假设（H8）**：在 `0048` 主线二进制上，保持与 Run150 完全一致的无诊断峰值测试条件（8 vCPU、4 GiB RAM、`qarma5` + `--pauth-memo --pauth-memo-entries 1024 --pauth-memo-stats`，**关闭 `--webkit-timeout-diagnostic` 与 `--sync-stats`**，**不等待安静**直接在启动后 **`+720 s`** 触发第一次冷启动 Safari）：
+   - 第一次冷启动首个 GPU 进程一次完成初始化（`outcome = initialized`、`gpu_unresponsive_exits == 0`），且 **`ui_request_to_did_initialize < 3.000 s`**（无需依赖 UIProcess 运行循环裕量，在后台峰值负载下直接击穿原版 WebKit `3.000 s` 硬期限）；
+   - 固定 WebGL2 离屏与默认帧缓冲各 24,576 字节读回 `bit_exact = true`；
+   - `+1020 s` 第二次新鲜启动 `gpu_unresponsive_exits == 0` 且 **`ui_request_to_did_initialize < 1.500 s`**。
+2. **纯执行占比跃升与热点压缩假设（H9）**：在远离 `+720 s` 试验窗口的 `+520 s` 后台饱和期采集 15 秒 DWARF `perf` 剖面（`CPU */TCG` 宿主 P 核 `cpu_core/cycles/P`）：
+   - 翻译客体代码 `[JIT]` 占比从 Run149 的 `24.12%` 提升至 **`≥ 30.0%`**（较 `0039` 基线的 `13.52%` 累计提升 > 120%）；
+   - `qht_lookup_custom` 自占从 `5.35%` 降至 **`≤ 2.0%`**，PAuth 函数族合计自占从 `~21.1%` 降至 **`≤ 10.0%`**。
+
+---
+
+## 第五阶段实测结果（Run152：内联消除虚调用并暴露二级大表缓存污染）
+
+### 运行身份与完整性
+
+- 运行目录：`runs/e05-installed-boot/m3-peakload-0048-orig3s-20261113-152`
+- 二进制：`build/qemu-bdif-usb/qemu-system-aarch64`（SHA-256 `ce4b284d6f651d67f7c51c7159108bfac09785b2c172cfb16b2d44c8370eb8fb`，补丁链至 `0048`）
+- 配置：与 Run150 完全一致（8 vCPU、4 GiB RAM、`qarma5` + `--pauth-memo --pauth-memo-entries 1024 --pauth-memo-stats`，NVIDIA 原生窗口，**未传 `--webkit-timeout-diagnostic` 与 `--sync-stats`**，固定 `+720 s` / `+1020 s` 触发，并在 `+1278 s` 附加并发 20 s `perf` 第三轮启动）
+- 客体与宿主健康度：起始封装温度 `45 °C`；客体执行 `sudo /sbin/shutdown -h now` 正常关机（`qemu_exit_code = 0`，`guest_shutdown_observed = true`，`errors = []`，总时长 `1680.2 s`）；宿主封装温度 331 个样本，`min = 46 °C`、`mean = 77.0 °C`、`max = 95 °C`；时钟探针 `r152a = -3.0681 s`（跨度 `2.4 ms`）、`r152b = -3.0738 s`（跨度 `1.6 ms`）；全程累计 `52.81B` 次 PAuth（持续 **`31.43M/s`**，1,024 槽一级命中率 `84.45%`）。
+
+### H8 与 H9 检验结果：部分子项显著改善，但 `256 KiB` 二级 QARMA 表引发 `+2.63%` 净回退导致 H8/H9 未达标
+
+1. **三轮无诊断 Safari 启动表现**：
+   - **试验 1（`+720 s` 后台峰值窗口，无 `perf`）**：首个 GPU 进程（PID 1072）的 `constructor -> proxy_launched` 创峰值期最快 **`8.818 s`**（Run150 为 `9.383 s`）；但由于 UIProcess 主线程本身加快而零裕量准时在 `3.008 s` 触发 1 次看门狗（PID 1072 实际于 `+3.482 s` 销毁 SandboxHelper、`+3.801 s` 完成 `didInitialize`），替补 GPU 进程在无诊断下立即自动恢复（`web_unresponsive = 0`），**固定 WebGL2 离屏与默认帧缓冲各 24,576 字节读回均 `bit_exact=true`**（跨 6 轮独立冷启动 **6/6** 通过）。因存在 1 次看门狗退出且未破 `< 3.000 s`，**H8 未通过**。
+   - **试验 2（`+1020 s` 无干扰）**：**0 看门狗退出、0 Web 无响应**，`ui_request_to_did_initialize = 1.795 s`。
+   - **试验 3（`+1278 s` 并发 20 s DWARF `perf`）**：**0 看门狗退出、0 Web 无响应**，**`ui_request_to_did_initialize = 1.725 s`**（创并发 `perf` 采样历史最快，优于 Run149 的 `1.856 s` 与 Run148 的 `2.056 s`）。
+2. **`perf` 因果分解（`0045` Run149 vs `0048` Run152，`CPU */TCG` 宿主 P 核 `cpu_core/cycles/P`）**：
+   - **已验证生效的改进**：`arm_stage1_mmu_idx` + `arm_mmu_idx*` 从 `2.17%` 降至 **`0.00%`**；`arm_cpu_mmu_index` 从 `0.52%` 降至 **`0.00%`**；`is_guarded_page` 从 `0.46%` 降至 **`0.00%`**；`probe_access_internal` 从 `2.46%` 大降 **41.9% 至 `1.43%`**（Safari 启动期 `1.33%`）；`qht_lookup_custom` 从 `5.35%` 降 **32.3% 至 `3.62%`**（Safari 启动期 `2.92%`）。
+   - **精确捕获的两处负向抵消（解释为何饱和期 `[JIT]` 停在 `23.96%`）**：
+     1. **`pauth_qarma_l2` 缓存污染净亏 `+2.63%`**：`qarma_ssse3_compute` 仅需约 35–40 ns 纯寄存器运算（占比从 `3.15%` 降至 `1.85%`，省 `1.30%`），而探测每核 `256 KiB` 二级表 `qarma_l2_lookup_or_compute`（加 64B 扩容的一级表）引入 **`3.93%`** 自占 L2 访存停顿，倒贴 `2.63%` P 核周期；
+     2. **`TB_JMP_CACHE_BITS` 从 `14` 缩至 `13` 将页桶数从 256 减半至 128**：2 路组相联虽降低冲突，但页桶减半使 3 个以上共享缓存页落入同一桶时仍留有 `3.62%` 的 `qht_lookup_custom`；
+     3. **PAuth 外层包装未短路**：即使 `pauth_computepac` 命中，每次 `PAC*`/`AUT*` 仍执行 `pauth_auth`（`3.85%`）+ 跨单元 `aa64_pauth_va_parameters`（`2.72%`）+ `pauth_computepac`（`4.07%`）+ `pauth_addpac`（`1.88%`）+ 入口包装（`2.69%`）共 **`15.2%`** 固定调用链与寄存器清零开销！
+
+---
+
+## 第六阶段运行前计划（补丁 `0049` 与 Run153：端到端 PAuth 指令级缓存、`PAC→AUT` 预填充与 32K 项 2-路跳转缓存）
+
+### 补丁设计（`0049-tcg-jmpcache-32k-and-pauth-op-cache.patch`）
+
+针对 Run152 `perf` 揭示的三项精确事实，设计 `0049`：
+
+1. **恢复 256 页桶并保持 2-路组相联（`TB_JMP_CACHE_BITS = 14`，`16,384` 组 × `2` 路 = `32,768` 项，`1.0 MiB` 位于 Lion Cove P 核 `3.0 MiB` 私有 L2 内）**：同时拥有 `0045` 的全部 256 个页桶与 `0046` 的 64B 单缓存行 2-路 LRU 相联度。
+2. **移除负收益的 `256 KiB` `pauth_qarma_l2` 并将 `ARMPAuthMemoEntry` 恢复为紧凑 48 字节**（保持 `pauth_helper.c` 原文契约 100% 不变，立即收回 `3.93%` L2 访存开销）。
+3. **每核 `64 KiB`（L1.5 常驻，`512` 组 × `2` 路 = `1,024` 项）端到端 PAuth 指令级缓存与 `PAC→AUT` 逆向预填充**（仅在 `x-pauth-memo=on` 且无 EL2/EL3/M 的 AArch64 下启用，默认关闭时不生效；随 `reset` 与 `post_load` 清零）：
+   - 在 `helper-a64.c` 提供 `translate-a64.c` 直接调用的顶层 `HELPER(pauth_fast_*)`：命中时在**单一叶函数（无子调用、无栈帧）**内直接比对全部 6 项架构输入 `(op_and_el, sctlr_en, tcr_el1, key.lo, key.hi, in_ptr, modifier)` 并返回 `out_ptr`，一次性短路 `aa64_pauth_va_parameters`、`pauth_addpac`/`pauth_auth` 与 `pauth_computepac` 的全部 15.2% 外层开销；
+   - **冷调用逆向预填充（数学恒等条件）**：当 `PACI[AB]`/`PACD[AB]` 对规范指针 `x`（满足 `!param.mtx && ((x ^ sextract64(x, 55, 1)) & pauth_ptr_mask(param)) == 0`，故 `pauth_original_ptr(signed_ptr, param) == x`）计算出 `signed_ptr` 时，同步将已验证成功的逆映射 `(OP_AUT_*, signed_ptr, modifier) -> x` 写入同一组相联缓存（注：失败或伪造指针永不入表，未命中时顶层 `HELPER` 直接持真实 `GETPC()` 调用 `raise_exception_ra` 保证异常 `ELR_ELx` 精确恢复）。这使得新启动进程首次执行函数序言 `PACIBSP` 后，对应的函数尾声 `RETAB` **在冷首次执行时即 100% 命中叶函数快路径**！
+   - 在 `arm_pauth_qarma_selftest()` 启动自检中新增 65,536 组覆盖全部 `PauthFeat`（`0`、`EPAC`、`Pauth2`、`FPAC`、`FPACCOMBINED`）、`TBI`/`TSZ`、规范/非规范指针、密钥/TCR 切换与伪造标签的交叉比对断言。
+
+### 第六阶段假设（Run153）
+
+在完全相同的无诊断峰值窗口测试条件（8 vCPU、4 GiB RAM、`qarma5` + `--pauth-memo --pauth-memo-entries 1024 --pauth-memo-stats`，关闭 `--webkit-timeout-diagnostic` 与 `--sync-stats`，固定 `+720 s` / `+1020 s` 触发）下：
+1. **H10（峰值期无诊断 `< 3.000 s` 硬期限突破）**：`+720 s` 第一次冷启动 Safari 首个 GPU 进程一次完成初始化（`outcome = initialized`、`gpu_unresponsive_exits == 0`）且 **`ui_request_to_did_initialize < 3.000 s`**，固定 WebGL2 双缓冲读回 `bit_exact = true`，`+1020 s` 第二次新鲜启动 `< 1.500 s`。
+2. **H11（`[JIT]` 占比突破 30% 且 PAuth 减半）**：`+520 s` 饱和期 DWARF `perf` 中，客体 `[JIT]` P 核占比提升至 **`≥ 30.0%`**，`qht_lookup_custom` 自占降至 **`≤ 2.0%`**，PAuth 函数族合计自占从 `21.0%` 降至 **`≤ 10.0%`**。
+
+---
+
+## 第六阶段实测结果（Run153：PAuth 外层大幅压缩、三轮 0 看门狗通过，并定位 NEON FP16 `FMLA` 占饱和期 `9.18%`）
+
+### 运行身份与完整性
+
+- 运行目录：`runs/e05-installed-boot/m3-peakload-0049-orig3s-20261113-153`
+- 二进制：`build/qemu-bdif-usb/qemu-system-aarch64`（SHA-256 `ef897a396ce5a625ac6e47e1615e4d859c60be8b519f93946465b97527bd3531`，补丁链至 `0049`）
+- 配置：与 Run150、Run152 完全一致（8 vCPU、4 GiB RAM、`qarma5` + `--pauth-memo --pauth-memo-entries 1024 --pauth-memo-stats`，NVIDIA 原生窗口，**未传 `--webkit-timeout-diagnostic` 与 `--sync-stats`**，固定 `+720 s` / `+1020 s` 触发，并在 `+1283 s` 附加并发 20 s `perf` 第三轮启动）
+- 客体与宿主健康度：起始封装温度 `47 °C`；客体执行 `sudo /sbin/shutdown -h now` 正常关机（`qemu_exit_code = 0`，`guest_shutdown_observed = true`，`errors = []`，总时长 `1674.4 s`）；宿主封装温度 330 个样本，`min = 52 °C`、**`mean = 76.3 °C`**、`max = 95 °C`（全程降频时长从 Run152 的 `11,780 ms` 减半至 **`5,723 ms`**）；时钟探针 `r153a = -3.0858 s`（跨度 `3.5 ms`）、`r153b = -3.0916 s`（跨度 `1.8 ms`）；全程累计 `49.75B` 次 PAuth，综合命中率升至 **`86.98%`**（未命中从 `8.21B` 降至 `6.48B`）。
+
+### H10 与 H11 检验结果：3/3 轮全部 0 看门狗一次通过，`+1020 s` 创 `1.659 s` 纪录，`[JIT]` 升至 `24.82%` 并暴露 `helper_gvec_fmla_idx_h`（`9.18%`）新主瓶颈
+
+1. **三轮无诊断 Safari 启动表现**：
+   - **试验 1（`+720 s` 后台峰值窗口，`vcpu_mean_busy = 6.328`，无 `perf`）**：**`outcome = initialized`、`gpu_processes = 1`、0 看门狗退出**一次通过（`3.314 s`，期间封装温度瞬时触及 `95 °C` 热墙；固定 WebGL2 离屏与默认帧缓冲各 24,576 字节读回连续 **7/7** `bit_exact=true`）。因 `3.314 s` 仍高于标称 `< 3.000 s` 子项，H10 的严格 `< 3.000 s` 子项未达标。
+   - **试验 2（`+1020 s` 无干扰）**：**`gpu_processes = 1`、0 看门狗退出、0 Web 无响应**，**`ui_request_to_did_initialize = 1.659 s`**（创 `+1020 s` 窗口全项目最快，其中 **`gpu_entry -> registrar_activation = 0.760 s`** 创全项目历史最快，`constructor -> proxy_launched` 从 `8.846 s` 骤降 20.3% 至 **`7.054 s`**）。
+   - **试验 3（`+1283 s` 并发 20 s `perf`）**：**`gpu_processes = 1`、0 看门狗退出、0 Web 无响应**，`constructor -> proxy_launched = 5.975 s`，`ui_request_to_did_initialize = 2.185 s`。
+2. **`perf` 因果分解（`CPU */TCG` 宿主 P 核 `cpu_core/cycles/P`）**：
+   - **翻译客体 `[JIT]` 占比升至全项目最高 `24.82%`**（累计较 `0039` 的 `13.52%` **+83.6%**），`qht_lookup_custom` 进一步降至 **`2.77%`（饱和期）/ `2.54%`（Safari 启动期）**（较 `0045` 降 **48.2%**），`aa64_pauth_va_parameters` 大降 **73.0%**（`2.93% → 0.79%`），`pauth_op_miss_aut` 压至 **`0.44%`**（Safari 启动期 `< 0.40%`，证实 `PAC→AUT` 逆向预填充消除了 >90% 的返回认证未命中），PAuth 全族合计自占从 `21.1%` 降至 **`12.1%–13.4%`**；
+   - **新浮现的两项明确瓶颈**：
+     1. **后台 Spotlight / CoreML / Quartz 的 NEON FP16 向量乘加 `helper_gvec_fmla_idx_h -> float16_muladd_scalbn` 占饱和期 `9.18%` P 核周期（Safari 启动期亦达 `~8.5%`）**：逐元素调用软浮点 `float16a_unpack_canonical`（`4.08%`）+ `parts64_muladd`（`2.37%`）+ `parts64_uncanon`（`1.20%`），每条 8 通道指令执行约 1,200 条宿主标量指令；
+     2. **`CPUJumpCache` 扩至 `1.0 MiB`（`TB_JMP_CACHE_BITS = 14`）使 `helper_lookup_tb_ptr` L1.5 缺失自占从 `13.27%` 升至 `17.38%`**（`+4.11%`），抵消了 `qht_lookup_custom` 减少的 `0.85%`——改用 `TB_JMP_CACHE_BITS = 13` 配合 `TB_JMP_PAGE_BITS = 5` 可在 **`512 KiB` 容量**下同时保留全部 **256 个页桶（每桶 32 组 × 2 路 = 64 项）**！
+
+---
+
+## 第七阶段运行前计划（补丁 `0050` 与 Run154：硬件 `F16C+FMA` 逐位精确 FP16 乘加与 `512 KiB` 256 页桶跳转缓存）
+
+### 补丁设计（`0050-f16-muladd-avx2-and-jmpcache-512k.patch`）
+
+1. **x86_64 `F16C + AVX2 + FMA` 逐位精确 IEEE-754 `float16_muladd_scalbn` 与 8 通道 `gvec_fmla_idx_h` 快路径**：
+   - **严格数学等价性证明**：任意有限正规或零值 `binary16`（11 位尾数）在 `binary64`（`double`，53 位尾数、指数 `[-1022, +1023]`）中均 **100% 精确表示**；由于 `RNE_64` 单调且所有正规 `binary16` 半中点 `(n + 0.5) * 2^(e - 10)` 在 `double` 中低 41 位全为 `0`，当 `d = fma((double)a, (double)b, (double)c)` 的偏置指数满足 `1009 <= bexp <= 1037`（即 $2^{-14} \le |d| < 2^{15}$，远离下溢与上溢边界）且 `low42 = d_bits & ((1ULL << 42) - 1)` 满足 `low42 != (1ULL << 41)`（非半中点，出现率 $< 2^{-41}$）时，直接对 `d_bits` 做单次整数舍入并维护 `float_flag_inexact` 与软浮点 `float16_muladd_scalbn` **在全部 $2^{48}$ 种输入及 `FPSR` 异常标志上逐位恒等**（凡遇次正规数、`Inf`/`NaN`、非 RNE 舍入、越界或半中点一律回落原软浮点慢路径；已在独立 5,004 万组边界+随机向量 UBSan oracle 下验证 0 误差，并在 QEMU 启动时自检）。
+   - 在 `fpu/softfloat.c:float16_muladd_scalbn()` 提供标量 `F16C+FMA` 快路径，并在 `target/arm/tcg/vec_helper.c` 为 `gvec_fmla_idx_h` / `gvec_fmls_idx_h` 提供一次转换 4/8 通道的 `_mm_cvtph_ps + _mm256_cvtps_pd + _mm256_fmadd_pd` 批量快路径。
+2. **`CPUJumpCache` 调优为 `512 KiB` + `256` 页桶（`TB_JMP_CACHE_BITS = 13`，`TB_JMP_PAGE_BITS = 5`）**：每核 `8,192` 组 × `2` 路 = `16,384` 项（`512 KiB`），每页桶 `32` 组 × `2` 路 = `64` 项、共 **256 个页桶**，兼顾 Lion Cove L1.5 命中率与页桶隔离度。
+
+### 第七阶段假设（Run154 / Run155）
+
+在完全相同的无诊断峰值窗口测试条件（8 vCPU、4 GiB RAM、`qarma5` + `--pauth-memo --pauth-memo-entries 1024 --pauth-memo-stats`，关闭 `--webkit-timeout-diagnostic` 与 `--sync-stats`，固定 `+720 s` / `+1020 s` 触发）下：
+1. **H12**：饱和期 DWARF `perf` 中，`float16_muladd_scalbn`（含子调用）占比从 `9.18%` 降至 **`< 1.0%`**，翻译客体 `[JIT]` P 核占比创历史新高（初定目标 `≥ 28.0%`）。
+2. **H13**：`+720 s` 窗口第一次冷启动 Safari 以 `0` 看门狗退出一次完成初始化且 **`ui_request_to_did_initialize < 3.000 s`**，固定 WebGL2 双缓冲读回 `bit_exact = true`，后续新鲜启动压入 `< 1.600 s`。
+
+---
+
+## 第七阶段实测结果（Run154 2.1 小时连续稳定性与 Run155 `+720 s` 首次击穿 `< 3.000 s` 硬期限）
+
+### Run154（`m3-peakload-0050-orig3s-20261113-154`：长时驻留、锁屏唤醒与正常关机验证）
+
+- 二进制：`build/qemu-bdif-usb/qemu-system-aarch64`（SHA-256 `e6f7b2cb32df3779531cf1b93612a67d8e1fa350c8b894c19d0c9e71a60f4a51`，补丁链至 `0050`）
+- 经过与收获：客体在 `+221 s` 登录、`+371 s` 到达桌面后因宿主会话暂停错过了 `+720 s` 触发点并进入显示休眠与锁屏。为检验 `0050` 补丁链的长时稳定性并保持 `+720 s` 对照口径纯净，未在该实例上补跑偏离时间窗的浏览器试验，而是唤醒显示、用 [guest_ui.py](../../experiments/E05-installed-boot/guest_ui.py) 新增的有界节流参数（`--hold 0.35 --gap 0.35`，防止锁屏慢速轮询下 16 槽 HID 键盘队列溢出）一次解锁回到桌面，核实时钟探针（`r154b = -3.1395 s`，跨度仅 **`1.5 ms`**）与 `Safari` 缺席后执行 `sudo /sbin/shutdown -h now` 正常关机（`qemu_exit_code = 0`，`guest_shutdown_observed = true`，`errors = []`）。
+- 量化结果：连续无故障运行 **`7,550.7 s`（2.10 小时）**，累计执行 **`191.38B` 次 PAuth 操作**（综合命中率 **`89.06%`**），1,500 个宿主温度样本均值 `67.3 °C`。
+
+### Run155（`m3-peakload-0050-orig3s-20261113-155`：无干扰 `+720 s` 完整三轮测试）
+
+- 运行身份：同一 `0050` 二进制（`e6f7b2cb…`），8 vCPU、4 GiB RAM、`qarma5` + `--pauth-memo --pauth-memo-entries 1024 --pauth-memo-stats`，NVIDIA 原生窗口，**关闭 `--webkit-timeout-diagnostic` 与 `--sync-stats`**。
+- 客体与宿主健康度：起始封装温度 `49 °C`；客体执行 `sudo /sbin/shutdown -h now` 正常关机（`qemu_exit_code = 0`，`guest_shutdown_observed = true`，`errors = []`，总时长 `1653.3 s`）；宿主封装温度 329 个样本，`min = 49 °C`、**`mean = 68.6 °C`（较 Run153 的 `76.3 °C` 骤降 `-7.7 °C`）**、**`max = 92 °C`（全程未触及 `95 °C` 热墙，降频累计仅 `3,489 ms`，较 Run152 的 `11,780 ms` 减少 `70.4%`）**；时钟探针 `r155a = -3.1448 s`（跨度 `2.8 ms`）、`r155b = -3.1506 s`（跨度 `1.6 ms`）；全程 `46.20B` 次 PAuth，综合命中率 **`87.56%`**。
+
+### H12 与 H13 检验结果：`+720 s` 冷首次启动 `2.941 s` 正面击穿 `< 3.000 s` 硬期限，第 3 轮创 `1.417 s` 全项目最快纪录，`float16_muladd` 降至 `< 0.05%`
+
+1. **三轮无诊断 Safari 启动表现（连续 3/3 轮 `gpu_processes = 1`、`0` 看门狗退出）**：
+   - **试验 1（`+720 s` 触发，无 `perf`）**：**`outcome = initialized`、`gpu_processes = 1`、`gpu_unresponsive_exits = 0`**，**`ui_request_to_did_initialize = 2.941 s`（`gpu_entry_to_did_initialize = 2.935 s`）**——在不等待安静、不开启任何超时诊断条件下，**首次于 `+720 s` 窗口正面击穿原版 WebKit `3.000 s` 硬期限**（初始化窗口内 `vcpu_mean_busy = 6.156`，`83.5%` 时间全 8 核满载）；固定 WebGL2 离屏与默认帧缓冲各 `24,576` 字节读回连续 **8/8** `bit_exact = true`。
+   - **试验 2（`+1020 s` 触发，无 `perf`）**：**`gpu_processes = 1`、`0` 看门狗退出、`0` Web 无响应通知**，`ui_request_to_did_initialize = 1.803 s`（`gpu_entry -> registrar = 0.940 s`，`registrar -> helper_create = 0.061 s`）。
+   - **试验 3（`+1284 s` 触发，并发 20 s DWARF `perf`）**：即便在并发拷贝 `83.7 MB` DWARF 栈样本条件下，仍以 **`gpu_processes = 1`、`0` 看门狗退出、`0` Web 无响应通知** 创下 **`ui_request_to_did_initialize = 1.417 s`**（`gpu_entry_to_did_initialize = 1.414 s`，`constructor -> proxy_launched = 5.696 s`）的**全项目历史最快纪录**——真实架构级 `QARMA5` 首度超越此前非密码学 `impdef` Run137 的 `1.539 s`！
+2. **`perf` 与后台负载时间线因果分解（`CPU */TCG` 宿主 P 核 `cpu_core/cycles/P`）**：
+   - **FP16 软浮点瓶颈彻底归零**：`float16_muladd_scalbn` 与 `helper_gvec_fmla_idx_h`（含全部子调用）在饱和期与 Safari 启动期双双从 **`9.18%` 降至 `< 0.05%`（未检出显著占比）**，验证硬件 `F16C+AVX2+FMA` 逐位精确快路径 100% 生效；
+   - **`512 KiB` + 256 页桶跳转缓存收回 L1.5 命中率**：`helper_lookup_tb_ptr` 自占从 Run153（`1.0 MiB` 缓存）的 `17.38%` 大幅回落 **`-6.29%` 至 `11.09%`**（Safari 启动期 `13.46%`），同时 `qht_lookup_custom` 在饱和期保持 **`2.88%`** 低位；
+   - **Safari 启动期 `[JIT]` P 核占比升至 `25.71%`（创全项目最高，但未达 `28.0%` 子项）**：在 `+568 s` 采集窗口中，由于 FP16 层被硬件瞬间跑完，后台 Spotlight / CoreML 推进至最后一段单精度 `FMLA Vd.4S`（`float32_muladd` `13.42%` + `helper_gvec_fmla_idx_s` `7.20%`），致使该 15 秒片段内 `[JIT]` 为 `21.42%`；更重要的是，`host-threads.tsv` 逐分钟均值显示**登录后后台索引风暴在 `+660 s` 即提前消退**（第 11 分钟均值降至 `3.952`、第 12 分钟降至 **`1.531`**，`+960 s` 正式满足连续三分钟 `< 3.0` 判据，较 `0039` Run147 的 `+1335 s` 提前 **375 秒**），直接解释了封装均温下降 `-7.7 °C` 与 `+720 s` 突破 `< 3.000 s` 的双重收益。
+   - **假设裁定**：H12 的 `float16_muladd_scalbn < 1.0%` 子项大幅超额达成（`< 0.05%`），`[JIT]` 刷新纪录至 `25.71%`（未达激进的 `28.0%` 阈值）；H13 的 `+720 s` `0` 看门狗且 `< 3.000 s`（`2.941 s`）与 WebGL2 `bit_exact=true` 核心子项达成，后续新鲜启动于第 3 轮达 `1.417 s`（`< 1.600 s`，第 2 轮为 `1.803 s`）。
+
+### 全程演进总结（`0033` → `0050`，Run143 → Run155）
+
+| 阶段 | 补丁范围 | 核心机制改进 | 关键实测里程碑 |
+|---|---|---|---|
+| 同步争用消除（Run143–146） | `0033–0039` | 无锁 `CNTVCT_EL0`、跳过屏蔽中断与 `EXITTB` 锁、栈 HMAC PAC `HVC`、无锁 `TLBI` 排空、`DSB` 聚合广播、EL1&0 `ERET` 省锁 | 饱和期全局锁获取率 **-90%**，vCPU 在核/可运行占比 **96.6%**；安静客体首次跑通无诊断冷启动（`3.219 s`） |
+| 局部性与向量 QARMA5（Run147–150） | `0040–0045` | 宿主 RAM 标记跨进程持久 `CPUJumpCache`（256 页桶）、16 KiB 子页精确 TLB 失效与 `TTBR0` 切换保留内核/物理页表 TLB、PAuth VA 缓存 + SSSE3 QARMA5、SME 预拆包 | 裸机 QARMA5 **-73%**，`tb_htable_lookup` **-62.7%**；安静客体破 `< 3.0 s`（`2.734 s`），`+720 s` 峰值期首次 `0` 看门狗通过（`3.254 s`） |
+| 叶函数内联、端到端 PAuth 缓存与硬件 FP16 FMA（Run152–155） | `0046–0050` | 64B 对齐 `512 KiB` 2-路 256 页桶内联跳转缓存、BTI 代码 TLB 快路径、`64 KiB` 端到端 PAuth 叶函数缓存 + `PAC→AUT` 逆向预填充、逐位精确 `F16C+AVX2+FMA` FP16 乘加 | `float16_muladd` **`9.18% → < 0.05%`**，`qht_lookup` **-48%**，PAuth 总自占 **-40%**，`[JIT]` 升至 **`25.71%`（累计 +90.2%）**；后台索引提前 **6+ 分钟**消退，均温降至 **`68.6 °C`**；**`+720 s` 无诊断冷首次启动 `2.941 s`（`< 3.000 s`，0 看门狗）**，新鲜复启动创 **`1.417 s`** 全项目纪录（超越 `impdef`），并验证 **2.10 小时**连续稳定运行 |

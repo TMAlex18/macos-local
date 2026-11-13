@@ -72,7 +72,12 @@ sets=[
   'patches/qemu-platform/0042-arm-pauth-va-cache-and-simd-qarma5.patch',
   'patches/qemu-platform/0043-arm-sme-fmopa-h-preunpack.patch',
   'patches/qemu-platform/0044-tcg-host-tagged-tb-jmp-cache.patch',
-  'patches/qemu-platform/0045-arm-ttbr-selective-tlb-flush.patch'])]
+  'patches/qemu-platform/0045-arm-ttbr-selective-tlb-flush.patch',
+  'patches/qemu-platform/0046-tcg-2way-jmp-cache-and-inline-fastpath.patch',
+  'patches/qemu-platform/0047-arm-pauth-fastpath-and-l2-qarma-cache.patch',
+  'patches/qemu-platform/0048-arm-bti-guarded-tlb-fastpath.patch',
+  'patches/qemu-platform/0049-tcg-jmpcache-32k-and-pauth-op-cache.patch',
+  'patches/qemu-platform/0050-f16-muladd-avx2-and-jmpcache-512k.patch'])]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--component',choices=[x[0] for x in sets])
 args=parser.parse_args()

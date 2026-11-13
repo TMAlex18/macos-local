@@ -1,3 +1,14 @@
+From: macos-local research
+Subject: [PATCH] Run queued TLB flush work without the BQL
+
+Add async_run_on_cpu_no_bql() and async_safe_run_on_cpu_no_bql(). When
+tcg_cpu_exec() returns EXCP_INTERRUPT and the queued items at the head
+are all marked no-BQL, the MTTCG thread runs them without the BQL and
+goes straight back into the guest; the first other item sends it down
+the normal BQL path, so queue order is kept. Cross-vCPU TLB flushes and
+the RCU kick use the new calls: flush work only touches the target
+vCPU's TLB, under that TLB's own lock.
+
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index e47a04e61a..5923a12e40 100644
 --- a/accel/tcg/cputlb.c

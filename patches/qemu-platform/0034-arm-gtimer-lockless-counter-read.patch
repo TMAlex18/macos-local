@@ -1,3 +1,13 @@
+From: macos-local research
+Subject: [PATCH] Read the ARM generic-timer counters without the BQL
+
+Add ARM_CP_LOCKFREE_READ for read-only counter views whose readfn only
+reads the seqlock-protected virtual clock and this vCPU's own state, and
+mark CNTPCT, CNTVCT, CNTPCT_EL0 and CNTVCT_EL0 with it. get_cp_reg() and
+get_cp_reg64() skip the BQL for these registers unless icount is enabled,
+and the sync statistics count them as lock-free reads. Writes and every
+other ARM_CP_IO register still take the BQL.
+
 diff --git a/target/arm/cpregs.h b/target/arm/cpregs.h
 index c2baba1d47..b7c3f052f2 100644
 --- a/target/arm/cpregs.h

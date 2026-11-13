@@ -175,6 +175,7 @@ profile and private prerequisites. Tags:
 | `pauth-baseline`, `pauth-model`, `pauth-model-impdef`, `pauth-guards` | E06 PAC and opt-in HVC software model |
 | `pauth-cost-bench` | E06 per-call TCG cost of PACIBSP/RETAB |
 | `sync-counter-tests` | E06 per-vCPU TCG BQL and exclusive-section trigger counters (`0033`) |
+| `fp16-fma-tests` | E06 exact-reference check of the float16 FMA fast paths in `0050` (host only) |
 | `clock-math`, `clock-functional`, `clock-rate-exact`, `clock-check`, `clock-rate-baseline` | E06 clock |
 | `bdif-usb-tests`, `bdif-usb-backpressure`, `bdif-usb-control`, `bdif-block-tests` | E05 transport with a self-written guest |
 | `config-mailbox-tests`, `avp-rtc-tests` | self-written guests for the configuration DMA and RTC contracts |

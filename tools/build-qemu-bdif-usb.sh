@@ -69,7 +69,12 @@ if ! python3 "$ROOT/tools/check-research-patches.py" --component qemu-bdif-usb >
           "$ROOT/patches/qemu-platform/0042-arm-pauth-va-cache-and-simd-qarma5.patch" \
           "$ROOT/patches/qemu-platform/0043-arm-sme-fmopa-h-preunpack.patch" \
           "$ROOT/patches/qemu-platform/0044-tcg-host-tagged-tb-jmp-cache.patch" \
-          "$ROOT/patches/qemu-platform/0045-arm-ttbr-selective-tlb-flush.patch"; do
+          "$ROOT/patches/qemu-platform/0045-arm-ttbr-selective-tlb-flush.patch" \
+          "$ROOT/patches/qemu-platform/0046-tcg-2way-jmp-cache-and-inline-fastpath.patch" \
+          "$ROOT/patches/qemu-platform/0047-arm-pauth-fastpath-and-l2-qarma-cache.patch" \
+          "$ROOT/patches/qemu-platform/0048-arm-bti-guarded-tlb-fastpath.patch" \
+          "$ROOT/patches/qemu-platform/0049-tcg-jmpcache-32k-and-pauth-op-cache.patch" \
+          "$ROOT/patches/qemu-platform/0050-f16-muladd-avx2-and-jmpcache-512k.patch"; do
   git -C "$SRC" apply "$p"
  done
  python3 "$ROOT/tools/check-research-patches.py" --component qemu-bdif-usb >/dev/null
@@ -170,6 +175,11 @@ for opt_patch in (
  'patches/qemu-platform/0043-arm-sme-fmopa-h-preunpack.patch',
  'patches/qemu-platform/0044-tcg-host-tagged-tb-jmp-cache.patch',
  'patches/qemu-platform/0045-arm-ttbr-selective-tlb-flush.patch',
+ 'patches/qemu-platform/0046-tcg-2way-jmp-cache-and-inline-fastpath.patch',
+ 'patches/qemu-platform/0047-arm-pauth-fastpath-and-l2-qarma-cache.patch',
+ 'patches/qemu-platform/0048-arm-bti-guarded-tlb-fastpath.patch',
+ 'patches/qemu-platform/0049-tcg-jmpcache-32k-and-pauth-op-cache.patch',
+ 'patches/qemu-platform/0050-f16-muladd-avx2-and-jmpcache-512k.patch',
 ):
  if opt_patch not in patches:
   raise SystemExit(f'Missing required sync optimization patch {opt_patch}')

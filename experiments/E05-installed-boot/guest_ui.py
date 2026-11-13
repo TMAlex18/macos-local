@@ -433,12 +433,12 @@ class GuestUI:
             self.journal.write(kind='native_screenshot',phase='after',status='unknown',name=name,reason=reason)
             raise UIError('Native screenshot not confirmed; consult its action receipt') from None
 
-    def _stroke(self,downs,ups,*,secret=False):
+    def _stroke(self,downs,ups,*,secret=False,hold=.08,gap=0.0):
         if secret and self.keyboard_drain:raise UIError('Keyboard drain diagnostics do not accept secret input')
         failure=None;released=False
         try:
             self._request('input-send-event',{'events':downs},record=not secret)
-            time.sleep(.08)
+            time.sleep(hold)
         except UIError as error:failure=error
         finally:
             if self.usable:
@@ -452,6 +452,7 @@ class GuestUI:
         if failure:
             failure.release_confirmed=released
             raise failure
+        if gap>0:time.sleep(gap)
         return released
 
     def release_known_keys(self):
@@ -513,17 +514,19 @@ class GuestUI:
         self.journal.write(phase='after',**meta,**result)
         return result
 
-    def _type_ascii(self,value,*,secret):
+    def _type_ascii(self,value,*,secret,hold=.08,gap=0.0):
+        validate_timing(hold,gap)
         validate_ascii(value)
         for char in value:
             keys=character_keys(char)
             self._stroke([key_event(key,True) for key in keys],
-                         [key_event(key,False) for key in reversed(keys)],secret=secret)
+                         [key_event(key,False) for key in reversed(keys)],secret=secret,hold=hold,gap=gap)
 
-    def type_ascii(self,value):
+    def type_ascii(self,value,*,hold=.08,gap=0.0):
+        validate_timing(hold,gap)
         validate_ascii(value)
         self.journal.write(kind='ascii_text',phase='before',text=value)
-        try:self._type_ascii(value,secret=False)
+        try:self._type_ascii(value,secret=False,hold=hold,gap=gap)
         except UIError as error:
             self.journal.write(kind='ascii_text',phase='after',status='unknown',failure_class=failure_class(error));raise
         result={'status':'host_accepted','release_confirmed':True,'gui_effect':'unverified',
@@ -532,8 +535,9 @@ class GuestUI:
         self.journal.write(kind='ascii_text',phase='after',**result)
         return result
 
-    def type_secret(self,path,key):
+    def type_secret(self,path,key,*,hold=.08,gap=0.0):
         if self.keyboard_drain:raise UIError('Keyboard drain diagnostics do not accept secret input')
+        validate_timing(hold,gap)
         path=Path(path)
         if not path.is_absolute():path=ROOT/path
         source={'file':str(path.absolute()),'key':key}
@@ -542,7 +546,7 @@ class GuestUI:
         try:
             value=private_value(path,key)
             started=True
-            self._type_ascii(value,secret=True)
+            self._type_ascii(value,secret=True,hold=hold,gap=gap)
             value=None
         except BaseException as error:
             # No exception text, data, length, per-key event or request ID is exposed.
@@ -568,6 +572,12 @@ def load_native_capture():
 
 
 def key_event(key,down):return {'type':'key','data':{'down':down,'key':{'type':'qcode','data':key}}}
+
+
+def validate_timing(hold,gap):
+    for value,low in ((hold,.01),(gap,0.0)):
+        if type(value) not in (int,float) or value!=value or not low<=value<=2.0:
+            raise UIError('Keystroke timing must be within supported bounds')
 
 
 def validate_ascii(value):
@@ -617,7 +627,9 @@ def main(argv=None):
     key=actions.add_parser('key');key.add_argument('key',choices=sorted(KEYS))
     chord=actions.add_parser('chord');chord.add_argument('keys',choices=['+'.join(keys) for keys in sorted(CHORDS)])
     text=actions.add_parser('type-ascii');text.add_argument('text',help='Non-sensitive ASCII only')
+    text.add_argument('--hold',type=float,default=.08);text.add_argument('--gap',type=float,default=0.0)
     secret=actions.add_parser('type-secret');secret.add_argument('--file',type=Path,required=True);secret.add_argument('--key',required=True)
+    secret.add_argument('--hold',type=float,default=.08);secret.add_argument('--gap',type=float,default=0.0)
     actions.add_parser('release-known-keys',help='Release supported keys individually, modifiers first')
     for name in ('pointer','click'):
         move=actions.add_parser(name);move.add_argument('x',type=int);move.add_argument('y',type=int);move.add_argument('--frame',required=True)
@@ -629,8 +641,8 @@ def main(argv=None):
             elif args.action=='native-screenshot':result=ui.native_screenshot(args.name)
             elif args.action=='key':result=ui.keys([args.key])
             elif args.action=='chord':result=ui.keys(args.keys.split('+'))
-            elif args.action=='type-ascii':result=ui.type_ascii(args.text)
-            elif args.action=='type-secret':result=ui.type_secret(args.file,args.key)
+            elif args.action=='type-ascii':result=ui.type_ascii(args.text,hold=args.hold,gap=args.gap)
+            elif args.action=='type-secret':result=ui.type_secret(args.file,args.key,hold=args.hold,gap=args.gap)
             elif args.action=='release-known-keys':result=ui.release_known_keys()
             else:result=ui.pointer(args.x,args.y,args.frame,click=args.action=='click')
         print(json.dumps(result));return 0

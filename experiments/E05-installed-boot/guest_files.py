@@ -176,7 +176,8 @@ class GuestFileService:
             # Existing custom three-file fixture directories remain valid.
             # When present, verify the fixed authored WebGL page through GET too.
             webgl_present=(self.serve/'webgl-probe.html').is_file()
-            optional=('webgl-probe.html',) if webgl_present else ()
+            optional=tuple(name for name in ('webgl-probe.html', 'webgl-complex-probe.html', 'app-suite-probe.sh')
+                           if (self.serve/name).is_file())
             for name in ('render.html', 'gpuwatch.sh', 'start-gpuwatch.sh', *optional, *resources):
                 expected = resources[name] if name in resources else (self.serve / name).read_bytes()
                 with client.open(base + '/get/' + name, timeout=5) as response:

@@ -1,3 +1,14 @@
+From: macos-local research
+Subject: [PATCH] Batch broadcast TLBI peer flushes until the next DSB
+
+Broadcast TLBIs flush the local TLB at once and record the peer flushes
+per vCPU (up to 64 ranges, then a full flush of the affected MMU
+indexes). The next DSB, exception entry or ERET sends one batch to every
+other vCPU and waits for them in one exclusive section; the DSB then
+restarts itself, so no instruction after it runs before the peers have
+flushed. The architecture only guarantees TLBI completion after a DSB,
+so the deferral is not visible to a correct guest.
+
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index 5923a12e40..cf8b008495 100644
 --- a/accel/tcg/cputlb.c

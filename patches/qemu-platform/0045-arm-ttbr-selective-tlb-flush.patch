@@ -5,6 +5,14 @@ Preserve ARMMMUIdx_Phys_NS and TTBR1_EL1 upper-half kernel SoftMMU TLB
 entries across AArch64 TTBR0_EL1 ASID switches when EL2/EL3 are absent and
 TCR_EL1.A1 / TCR2_EL1.FNGNA1 are zero.
 
+Guest assumption: the kept upper-half entries are not checked for nG. With
+TCR_EL1.A1 = 0 a non-global TTBR1_EL1 translation is tagged with the
+TTBR0_EL1 ASID, so the architecture requires it to stop matching after
+this switch. Keeping it is only correct for a guest that maps no
+non-global pages in the TTBR1_EL1 half. The macOS 27 vmapple guest has
+run with this patch since Run149, including a full signed restore
+(Run151), without a fault; other guests need the full flush.
+
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c

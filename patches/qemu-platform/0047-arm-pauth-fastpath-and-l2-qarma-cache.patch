@@ -1,0 +1,546 @@
+From: macos-local research
+Subject: [PATCH] Inline arm_stage1_mmu_idx, shrink-wrapped PAuth VA/memo fastpath, and 2-way L2 QARMA cache
+
+Inline AArch64 EL1&0 arm_stage1_mmu_idx(), relocate hot PAuth/BTI metadata
+before large ZA/memo arrays in CPUARMState for L1 DTLB locality, pad
+ARMPAuthMemoEntry to 64B cache lines, return pre-packed ARMVAParameters on
+VA-cache hits before the cold refill, and add a per-vCPU 2-way set-associative
+L2 QARMA cache (active only when x-pauth-memo is enabled, cleared on reset and
+migration post-load) plus pre-unpacked SSSE3 round constants.
+
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 8b2c245..352799f 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -724,6 +724,7 @@ static void arm_cpu_reset_hold(Object *obj, ResetType type)
+     if (cpu->board_hvc_reset) {
+         cpu->board_hvc_reset(cpu, cpu->board_hvc_opaque);
+     }
++    arm_cpu_sync_fast_cfg(cpu);
+     if (tcg_enabled()) {
+         hw_breakpoint_update_all(cpu);
+         hw_watchpoint_update_all(cpu);
+@@ -732,6 +733,31 @@ static void arm_cpu_reset_hold(Object *obj, ResetType type)
+     }
+ }
+ 
++void arm_cpu_sync_fast_cfg(ARMCPU *cpu)
++{
++    CPUARMState *env = &cpu->env;
++    uint8_t alg = 0;
++
++    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthMemoEntry) != 64);
++    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthQarmaL2Way) != 64);
++    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthQarmaL2Set) != 128);
++
++    if (cpu_isar_feature(aa64_pauth_qarma5, cpu)) {
++        alg = 5;
++    } else if (cpu_isar_feature(aa64_pauth_qarma3, cpu)) {
++        alg = 3;
++    }
++    env->pauth_fast = (ARMPAuthFastCfg) {
++        .algorithm = alg,
++        .memo_enabled = cpu->prop_pauth_memo,
++        .memo_stats = cpu->prop_pauth_memo_stats,
++        .va_cache_enabled = true,
++        .has_aa64_bti = cpu_isar_feature(aa64_bti, cpu),
++        .memo_mask = cpu->prop_pauth_memo_entries
++                     ? (cpu->prop_pauth_memo_entries - 1) : 0,
++    };
++}
++
+ void arm_emulate_firmware_reset(CPUState *cpustate, int target_el)
+ {
+     ARMCPU *cpu = ARM_CPU(cpustate);
+@@ -2776,7 +2802,7 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
+ #ifdef CONFIG_TCG
+         arm_pauth_qarma_selftest();
+ #endif
+-        env->pauth_va_cache_enabled = true;
++        arm_cpu_sync_fast_cfg(cpu);
+     }
+ 
+     qemu_init_vcpu(cs);
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index 2f11453..cd2f2b9 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -158,6 +158,7 @@ typedef struct ARMPAuthMemoEntry {
+     uint64_t result;
+     uint8_t algorithm;
+     bool valid;
++    uint8_t pad[22];
+ } ARMPAuthMemoEntry;
+ 
+ typedef struct ARMPAuthVACacheSlot {
+@@ -167,8 +168,38 @@ typedef struct ARMPAuthVACacheSlot {
+     uint8_t tbi_mask;
+     uint8_t mtx_mask;
+     bool valid;
++    uint8_t pad[7];
+ } ARMPAuthVACacheSlot;
+ 
++typedef struct ARMPAuthFastCfg {
++    uint8_t algorithm;
++    bool memo_enabled;
++    bool memo_stats;
++    bool va_cache_enabled;
++    bool has_aa64_bti;
++    uint8_t pad[3];
++    uint32_t memo_mask;
++} ARMPAuthFastCfg;
++
++#define ARM_PAUTH_QARMA_L2_BITS 11
++#define ARM_PAUTH_QARMA_L2_SETS (1 << ARM_PAUTH_QARMA_L2_BITS)
++#define ARM_PAUTH_QARMA_L2_WAYS 2
++
++typedef struct ARMPAuthQarmaL2Way {
++    uint64_t data;
++    uint64_t modifier;
++    ARMPACKey key;
++    uint64_t result;
++    uint8_t isqarma3;
++    bool valid;
++    uint8_t lru;
++    uint8_t pad[21];
++} ARMPAuthQarmaL2Way;
++
++typedef struct ARMPAuthQarmaL2Set {
++    ARMPAuthQarmaL2Way way[ARM_PAUTH_QARMA_L2_WAYS];
++} ARMPAuthQarmaL2Set;
++
+ /* See the commentary above the TBFLAG field definitions.  */
+ typedef struct CPUARMTBFlags {
+     uint32_t flags;
+@@ -746,6 +777,10 @@ typedef struct CPUArchState {
+ 
+     uint64_t scxtnum_el[4];
+ 
++    /* Keep small hot PAuth/BTI metadata before large ZA/memo arrays for DTLB. */
++    ARMPAuthVACacheSlot pauth_va_cache[16];
++    ARMPAuthFastCfg pauth_fast;
++
+     struct {
+         /* SME2 ZT0 -- 512 bit array, with data ordered like ARMVectorReg. */
+         uint64_t zt0[512 / 64] QEMU_ALIGNED(16);
+@@ -794,8 +829,8 @@ typedef struct CPUArchState {
+     uint8_t tlbi_deferred_pending;
+ 
+     /* Per-vCPU pure-function memoization; reset also clears cached key copies. */
+     ARMPAuthMemoEntry pauth_memo[ARM_PAUTH_MEMO_MAX_ENTRIES];
+-    ARMPAuthVACacheSlot pauth_va_cache[16];
++    ARMPAuthQarmaL2Set pauth_qarma_l2[ARM_PAUTH_QARMA_L2_SETS];
+ 
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+@@ -805,7 +840,6 @@ typedef struct CPUArchState {
+     /* Non-migrated diagnostics; reset/post-load explicitly use atomic stores. */
+     uint64_t pauth_memo_hits;
+     uint64_t pauth_memo_misses;
+-    bool pauth_va_cache_enabled;
+ 
+     /* Internal CPU feature flags.  */
+     uint64_t features;
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 890f583..7741fe2 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -10323,35 +10323,45 @@ ARMVAParameters aa64_va_parameters(CPUARMState *env, uint64_t va,
+ ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
+                                          ARMMMUIdx mmu_idx, bool data)
+ {
+-    if (likely(env->pauth_va_cache_enabled)) {
+-        uint64_t tcr = regime_tcr(env, mmu_idx);
++    if (likely(env->pauth_fast.va_cache_enabled)) {
++        uint64_t tcr = likely((unsigned)(mmu_idx - ARMMMUIdx_Stage1_E0) <=
++                              (ARMMMUIdx_Stage1_E1_GCS - ARMMMUIdx_Stage1_E0))
++                       ? env->cp15.tcr_el[1]
++                       : regime_tcr(env, mmu_idx);
+         ARMPAuthVACacheSlot *slot = &env->pauth_va_cache[(unsigned)mmu_idx & 15];
+-        unsigned select = extract64(va, 55, 1);
+-
+-        if (unlikely(!slot->valid || slot->mmu_idx != (uint32_t)mmu_idx ||
+-                     slot->tcr != tcr)) {
+-            ARMVAParameters i0 = aa64_va_parameters_impl(env, 0, mmu_idx,
+-                                                         false, false, true);
+-            ARMVAParameters i1 = aa64_va_parameters_impl(env, 1ULL << 55,
+-                                                         mmu_idx, false,
+-                                                         false, true);
+-            ARMVAParameters d0 = aa64_va_parameters_impl(env, 0, mmu_idx,
+-                                                         true, false, true);
+-            ARMVAParameters d1 = aa64_va_parameters_impl(env, 1ULL << 55,
+-                                                         mmu_idx, true,
+-                                                         false, true);
+-            slot->tcr = tcr;
+-            slot->mmu_idx = (uint32_t)mmu_idx;
+-            slot->tsz[0] = i0.tsz;
+-            slot->tsz[1] = i1.tsz;
+-            slot->tbi_mask = (i0.tbi & 1) | ((i1.tbi & 1) << 1) |
+-                             ((d0.tbi & 1) << 2) | ((d1.tbi & 1) << 3);
+-            slot->mtx_mask = (i0.mtx & 1) | ((i1.mtx & 1) << 1);
+-            slot->valid = true;
++        unsigned select = (unsigned)((va >> 55) & 1);
++        unsigned bit = ((unsigned)data << 1) | select;
++
++        if (likely(slot->valid && slot->mmu_idx == (uint32_t)mmu_idx &&
++                   slot->tcr == tcr)) {
++            return (ARMVAParameters) {
++                .tsz = slot->tsz[select],
++                .tbi = (slot->tbi_mask >> bit) & 1,
++                .mtx = (slot->mtx_mask >> select) & 1,
++            };
+         }
++
++        ARMVAParameters i0 = aa64_va_parameters_impl(env, 0, mmu_idx,
++                                                     false, false, true);
++        ARMVAParameters i1 = aa64_va_parameters_impl(env, 1ULL << 55,
++                                                     mmu_idx, false,
++                                                     false, true);
++        ARMVAParameters d0 = aa64_va_parameters_impl(env, 0, mmu_idx,
++                                                     true, false, true);
++        ARMVAParameters d1 = aa64_va_parameters_impl(env, 1ULL << 55,
++                                                     mmu_idx, true,
++                                                     false, true);
++        slot->tcr = tcr;
++        slot->mmu_idx = (uint32_t)mmu_idx;
++        slot->tsz[0] = i0.tsz;
++        slot->tsz[1] = i1.tsz;
++        slot->tbi_mask = (i0.tbi & 1) | ((i1.tbi & 1) << 1) |
++                         ((d0.tbi & 1) << 2) | ((d1.tbi & 1) << 3);
++        slot->mtx_mask = (i0.mtx & 1) | ((i1.mtx & 1) << 1);
++        slot->valid = true;
+         return (ARMVAParameters) {
+             .tsz = slot->tsz[select],
+-            .tbi = (slot->tbi_mask >> (data * 2 + select)) & 1,
++            .tbi = (slot->tbi_mask >> bit) & 1,
+             .mtx = (slot->mtx_mask >> select) & 1,
+         };
+     }
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+index cf793c4..1e8210a 100644
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1331,7 +1331,23 @@ static inline ARMMMUIdx arm_stage1_mmu_idx(CPUARMState *env)
+ }
+ #else
+ ARMMMUIdx stage_1_mmu_idx(ARMMMUIdx mmu_idx);
+-ARMMMUIdx arm_stage1_mmu_idx(CPUARMState *env);
++static inline ARMMMUIdx arm_stage1_mmu_idx(CPUARMState *env)
++{
++    if (likely((env->pstate & PSTATE_nRW) == 0 &&
++               !arm_feature(env, ARM_FEATURE_EL2) &&
++               !arm_feature(env, ARM_FEATURE_EL3) &&
++               !arm_feature(env, ARM_FEATURE_M))) {
++        unsigned el = extract32(env->pstate, 2, 2);
++        if (el == 0) {
++            return ARMMMUIdx_Stage1_E0;
++        }
++        if (el == 1) {
++            return (env->pstate & PSTATE_PAN)
++                   ? ARMMMUIdx_Stage1_E1_PAN : ARMMMUIdx_Stage1_E1;
++        }
++    }
++    return stage_1_mmu_idx(arm_mmu_idx(env));
++}
+ #endif
+ 
+ static inline uint32_t aarch32_cpsr_valid_mask(uint64_t features,
+@@ -1473,7 +1489,11 @@ ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
+                                          ARMMMUIdx mmu_idx, bool data);
+ uint64_t arm_pauth_computepac_architected_fast(uint64_t data, uint64_t modifier,
+                                                ARMPACKey key, bool isqarma3);
++uint64_t arm_pauth_computepac_memo_miss(CPUARMState *env, uint64_t data,
++                                        uint64_t modifier, ARMPACKey key,
++                                        bool isqarma3);
+ void arm_pauth_qarma_selftest(void);
++void arm_cpu_sync_fast_cfg(ARMCPU *cpu);
+ 
+ int aa64_va_parameter_mtx(uint64_t tcr, ARMMMUIdx mmu_idx);
+ int aa64_va_parameter_tbi(uint64_t tcr, ARMMMUIdx mmu_idx);
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+index 1ec4c55..e4b6c0e 100644
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -1165,6 +1165,8 @@ static int cpu_post_load(void *opaque, int version_id)
+     int i, v;
+ 
+     /* Optional derived cache is local to this CPU and is not migrated. */
++    memset(env->pauth_qarma_l2, 0, sizeof(env->pauth_qarma_l2));
++    arm_cpu_sync_fast_cfg(cpu);
+     memset(env->pauth_memo, 0, sizeof(env->pauth_memo));
+     memset(env->pauth_va_cache, 0, sizeof(env->pauth_va_cache));
+     qatomic_set(&env->pauth_memo_hits, 0);
+diff --git a/target/arm/ptw.c b/target/arm/ptw.c
+index a114a2c..f885d80 100644
+--- a/target/arm/ptw.c
++++ b/target/arm/ptw.c
+@@ -184,11 +184,6 @@ ARMMMUIdx stage_1_mmu_idx(ARMMMUIdx mmu_idx)
+     }
+ }
+ 
+-ARMMMUIdx arm_stage1_mmu_idx(CPUARMState *env)
+-{
+-    return stage_1_mmu_idx(arm_mmu_idx(env));
+-}
+-
+ /*
+  * Return where we should do ptw loads from for a stage 2 walk.
+  * This depends on whether the address we are looking up is a
+diff --git a/target/arm/tcg/hflags.c b/target/arm/tcg/hflags.c
+index 50d03a2..540ba5e 100644
+--- a/target/arm/tcg/hflags.c
++++ b/target/arm/tcg/hflags.c
+@@ -803,9 +803,9 @@ TCGTBCPUState arm_get_tb_cpu_state(CPUState *cs)
+     assert_hflags_rebuild_correctly(env);
+     flags = env->hflags;
+ 
+-    if (EX_TBFLAG_ANY(flags, AARCH64_STATE)) {
++    if (likely(EX_TBFLAG_ANY(flags, AARCH64_STATE))) {
+         pc = env->pc;
+-        if (cpu_isar_feature(aa64_bti, env_archcpu(env))) {
++        if (env->pauth_fast.has_aa64_bti) {
+             DP_TBFLAG_A64(flags, BTYPE, env->btype);
+         }
+     } else {
+@@ -1035,6 +1035,8 @@ static uint64_t qarma_scalar_compute(uint64_t data, uint64_t modifier,
+ 
+ #ifdef ARM_PAUTH_HAVE_X86_SIMD
+ static bool arm_pauth_use_ssse3;
++static __m128i qarma_rc_v[5];
++static __m128i qarma_alpha_v;
+ 
+ static inline __attribute__((always_inline, target("ssse3")))
+ __m128i qarma_unpack_u64(uint64_t x)
+@@ -1079,13 +1081,6 @@ static uint64_t __attribute__((target("ssse3")))
+ qarma_ssse3_compute(uint64_t data, uint64_t modifier,
+                     ARMPACKey key, bool isqarma3)
+ {
+-    static const uint64_t RC[5] = {
+-        0x0000000000000000ull,
+-        0x13198A2E03707344ull,
+-        0xA4093822299F31D0ull,
+-        0x082EFA98EC4E6C89ull,
+-        0x452821E638D01377ull,
+-    };
+     const __m128i sbox_fwd = isqarma3 ?
+         _mm_setr_epi8(0xa, 0xd, 0xe, 0x6, 0xf, 0x7, 0x3, 0x5,
+                       0x9, 0x8, 0x0, 0xc, 0xb, 0x1, 0x2, 0x4) :
+@@ -1112,7 +1107,7 @@ qarma_ssse3_compute(uint64_t data, uint64_t modifier,
+     const __m128i rot2_lut =
+         _mm_setr_epi8(0x0, 0x4, 0x8, 0xc, 0x1, 0x5, 0x9, 0xd,
+                       0x2, 0x6, 0xa, 0xe, 0x3, 0x7, 0xb, 0xf);
+-    const __m128i alpha_v = qarma_unpack_u64(0xC0AC29B7C97C50DDull);
++    const __m128i alpha_v = qarma_alpha_v;
+     const int iterations = isqarma3 ? 2 : 4;
+     uint64_t key0 = key.hi, key1 = key.lo;
+     uint64_t modk0 = (key0 << 63) | ((key0 >> 1) ^ (key0 >> 63));
+@@ -1120,14 +1115,13 @@ qarma_ssse3_compute(uint64_t data, uint64_t modifier,
+     __m128i key1_v = qarma_unpack_u64(key1);
+     __m128i modk0_v = qarma_unpack_u64(modk0);
+     __m128i t_hist[5];
+-    __m128i rc_v[5];
+     __m128i t = qarma_unpack_u64(modifier);
+     __m128i w = qarma_unpack_u64(data ^ key0);
+ 
+     for (int i = 0; i <= iterations; ++i) {
+         t_hist[i] = t;
+-        rc_v[i] = qarma_unpack_u64(RC[i]);
+-        w = _mm_xor_si128(w, _mm_xor_si128(_mm_xor_si128(key1_v, t), rc_v[i]));
++        w = _mm_xor_si128(w, _mm_xor_si128(_mm_xor_si128(key1_v, t),
++                                           qarma_rc_v[i]));
+         if (i > 0) {
+             w = _mm_shuffle_epi8(w, perm_shuf);
+             w = qarma_simd_mult(w, rot1_lut, rot2_lut);
+@@ -1158,12 +1152,27 @@ qarma_ssse3_compute(uint64_t data, uint64_t modifier,
+         }
+         w = _mm_xor_si128(w, _mm_xor_si128(
+             _mm_xor_si128(key1_v, t_hist[rev]),
+-            _mm_xor_si128(rc_v[rev], alpha_v)));
++            _mm_xor_si128(qarma_rc_v[rev], alpha_v)));
+     }
+ 
+     w = _mm_xor_si128(w, modk0_v);
+     return qarma_pack_u64(w);
+ }
++
++static void __attribute__((target("ssse3"))) qarma_ssse3_init_consts(void)
++{
++    static const uint64_t RC[5] = {
++        0x0000000000000000ull,
++        0x13198A2E03707344ull,
++        0xA4093822299F31D0ull,
++        0x082EFA98EC4E6C89ull,
++        0x452821E638D01377ull,
++    };
++    for (int i = 0; i < 5; i++) {
++        qarma_rc_v[i] = qarma_unpack_u64(RC[i]);
++    }
++    qarma_alpha_v = qarma_unpack_u64(0xC0AC29B7C97C50DDull);
++}
+ #endif
+ 
+ static uint64_t qarma_prng_next(uint64_t *state)
+@@ -1174,6 +1183,44 @@ static uint64_t qarma_prng_next(uint64_t *state)
+     return z ^ (z >> 31);
+ }
+ 
++static inline uint64_t qarma_l2_lookup_or_compute(ARMPAuthQarmaL2Set *sets,
++                                                  uint64_t data,
++                                                  uint64_t modifier,
++                                                  ARMPACKey key,
++                                                  bool isqarma3)
++{
++    uint64_t mixed = (data * UINT64_C(0x9e3779b97f4a7c15)) ^
++                     (modifier * UINT64_C(0xbf58476d1ce4e5b9)) ^
++                     (key.lo * UINT64_C(0x94d049bb133111eb));
++    uint32_t h = (uint32_t)(mixed >> (64 - ARM_PAUTH_QARMA_L2_BITS));
++    ARMPAuthQarmaL2Set *set = &sets[h];
++    uint8_t q3 = isqarma3 ? 1 : 0;
++
++    for (int i = 0; i < ARM_PAUTH_QARMA_L2_WAYS; i++) {
++        ARMPAuthQarmaL2Way *w = &set->way[i];
++        if (w->valid && w->data == data && w->modifier == modifier &&
++            w->key.lo == key.lo && w->key.hi == key.hi && w->isqarma3 == q3) {
++            set->way[0].lru = (i == 0) ? 1 : 0;
++            return w->result;
++        }
++    }
++
++    uint64_t res = arm_pauth_computepac_architected_fast(data, modifier,
++                                                         key, isqarma3);
++    int victim = !set->way[0].valid ? 0
++                 : !set->way[1].valid ? 1
++                 : (set->way[0].lru & 1);
++    ARMPAuthQarmaL2Way *w = &set->way[victim];
++    w->data = data;
++    w->modifier = modifier;
++    w->key = key;
++    w->result = res;
++    w->isqarma3 = q3;
++    w->valid = true;
++    set->way[0].lru = (victim == 0) ? 1 : 0;
++    return res;
++}
++
+ void arm_pauth_qarma_selftest(void)
+ {
+     static gsize initialized;
+@@ -1181,6 +1228,7 @@ void arm_pauth_qarma_selftest(void)
+     if (g_once_init_enter(&initialized)) {
+ #ifdef ARM_PAUTH_HAVE_X86_SIMD
+         if (__builtin_cpu_supports("ssse3")) {
++            qarma_ssse3_init_consts();
+             uint64_t seed = UINT64_C(0x6a09e667f3bcc908);
+             for (int mode = 0; mode < 2; mode++) {
+                 bool isq3 = (mode == 1);
+@@ -1201,6 +1249,27 @@ void arm_pauth_qarma_selftest(void)
+             arm_pauth_use_ssse3 = true;
+         }
+ #endif
++        g_autofree ARMPAuthQarmaL2Set *test_sets =
++            g_new0(ARMPAuthQarmaL2Set, ARM_PAUTH_QARMA_L2_SETS);
++        uint64_t l2_seed = UINT64_C(0xbb67ae8584caa73b);
++        ARMPACKey base_k = {
++            .lo = qarma_prng_next(&l2_seed),
++            .hi = qarma_prng_next(&l2_seed),
++        };
++        for (int i = 0; i < 512; i++) {
++            uint64_t d = UINT64_C(0x180001000) + ((uint64_t)i << 12);
++            uint64_t m = UINT64_C(0x16fd00000) + ((uint64_t)(i & 7) << 4);
++            bool isq3 = (i & 1) != 0;
++            uint64_t ref = qarma_scalar_compute(d, m, base_k, isq3);
++            g_assert_cmphex(qarma_l2_lookup_or_compute(test_sets, d, m,
++                                                       base_k, isq3), ==, ref);
++            g_assert_cmphex(qarma_l2_lookup_or_compute(test_sets, d, m,
++                                                       base_k, isq3), ==, ref);
++            uint64_t ref_alt = qarma_scalar_compute(d, m, base_k, !isq3);
++            g_assert_cmphex(qarma_l2_lookup_or_compute(test_sets, d, m,
++                                                       base_k, !isq3),
++                            ==, ref_alt);
++        }
+         g_once_init_leave(&initialized, 1);
+     }
+ }
+@@ -1215,3 +1284,11 @@ uint64_t arm_pauth_computepac_architected_fast(uint64_t data, uint64_t modifier,
+ #endif
+     return qarma_scalar_compute(data, modifier, key, isqarma3);
+ }
++
++uint64_t arm_pauth_computepac_memo_miss(CPUARMState *env, uint64_t data,
++                                        uint64_t modifier, ARMPACKey key,
++                                        bool isqarma3)
++{
++    return qarma_l2_lookup_or_compute(env->pauth_qarma_l2, data, modifier,
++                                      key, isqarma3);
++}
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+index dfad5ac..519381b 100644
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -255,6 +255,42 @@ static unsigned pauth_memo_slot(uint64_t data, uint64_t modifier,
+ static uint64_t pauth_computepac(CPUARMState *env, uint64_t data,
+                                  uint64_t modifier, ARMPACKey key)
+ {
++#ifdef COMPILING_PER_TARGET
++    if (0) {
++        return pauth_computepac_architected(data, modifier, key, false);
++    }
++    uint8_t alg = env->pauth_fast.algorithm;
++    if (unlikely(alg == 0)) {
++        return pauth_computepac_impdef(data, modifier, key);
++    }
++    if (likely(env->pauth_fast.memo_enabled)) {
++        unsigned slot = pauth_memo_slot(data, modifier,
++                                        env->pauth_fast.memo_mask + 1);
++        ARMPAuthMemoEntry *entry = &env->pauth_memo[slot];
++        if (likely(entry->valid && entry->data == data &&
++                   entry->modifier == modifier && entry->key.lo == key.lo &&
++                   entry->key.hi == key.hi && entry->algorithm == alg)) {
++            if (env->pauth_fast.memo_stats) {
++                qatomic_set(&env->pauth_memo_hits,
++                            qatomic_read(&env->pauth_memo_hits) + 1);
++            }
++            return entry->result;
++        }
++        if (env->pauth_fast.memo_stats) {
++            qatomic_set(&env->pauth_memo_misses,
++                        qatomic_read(&env->pauth_memo_misses) + 1);
++        }
++        uint64_t res = arm_pauth_computepac_memo_miss(env, data, modifier,
++                                                      key, alg == 3);
++        *entry = (ARMPAuthMemoEntry) {
++            .data = data, .modifier = modifier, .key = key, .result = res,
++            .algorithm = alg, .valid = true,
++        };
++        return res;
++    }
++    return arm_pauth_computepac_architected_fast(data, modifier, key,
++                                                 alg == 3);
++#else
+     ARMCPU *cpu = env_archcpu(env);
+     ARMPAuthMemoEntry *entry = NULL;
+     unsigned algorithm;
+@@ -287,15 +323,7 @@ static uint64_t pauth_computepac(CPUARMState *env, uint64_t data,
+         }
+     }
+ 
+-#ifdef COMPILING_PER_TARGET
+-    if (0) {
+-        return pauth_computepac_architected(data, modifier, key, algorithm == 3);
+-    }
+-    result = arm_pauth_computepac_architected_fast(data, modifier, key,
+-                                                   algorithm == 3);
+-#else
+     result = pauth_computepac_architected(data, modifier, key, algorithm == 3);
+-#endif
+     if (entry) {
+         *entry = (ARMPAuthMemoEntry) {
+             .data = data, .modifier = modifier, .key = key, .result = result,
+@@ -303,6 +331,7 @@ static uint64_t pauth_computepac(CPUARMState *env, uint64_t data,
+         };
+     }
+     return result;
++#endif
+ }
+ 
+ static uint64_t pauth_addpac(CPUARMState *env, uint64_t ptr, uint64_t modifier,

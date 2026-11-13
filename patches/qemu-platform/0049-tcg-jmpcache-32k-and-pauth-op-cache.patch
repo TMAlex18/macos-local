@@ -1,0 +1,913 @@
+From: macos-local research
+Subject: [PATCH] 32K 2-way CPUJumpCache and L1.5 end-to-end PAuth op cache with PAC->AUT pre-population
+
+Restore 256 page buckets (16,384 2-way sets = 32,768 entries) in CPUJumpCache,
+remove the net-negative 256 KiB pauth_qarma_l2 table, and add a 64 KiB
+L1.5-resident 2-way end-to-end PAuth instruction cache (active only when
+x-pauth-memo=on on AArch64 without EL2/EL3/M; cleared on reset and post-load)
+with algebraic PAC->AUT inverse pre-population on canonical pointers and a
+12,288-iteration startup equivalence selftest.
+
+diff --git a/accel/tcg/tb-jmp-cache.h b/accel/tcg/tb-jmp-cache.h
+index fe6ef85..d2b9277 100644
+--- a/accel/tcg/tb-jmp-cache.h
++++ b/accel/tcg/tb-jmp-cache.h
+@@ -12,7 +12,7 @@
+ #include "qemu/rcu.h"
+ #include "exec/cpu-common.h"
+ 
+-#define TB_JMP_CACHE_BITS 13
++#define TB_JMP_CACHE_BITS 14
+ #define TB_JMP_CACHE_SETS (1 << TB_JMP_CACHE_BITS)
+ #define TB_JMP_CACHE_WAYS 2
+ #define TB_JMP_CACHE_SIZE (TB_JMP_CACHE_SETS * TB_JMP_CACHE_WAYS)
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 352799f..098fffe 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -738,9 +738,8 @@ void arm_cpu_sync_fast_cfg(ARMCPU *cpu)
+     CPUARMState *env = &cpu->env;
+     uint8_t alg = 0;
+ 
+-    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthMemoEntry) != 64);
+-    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthQarmaL2Way) != 64);
+-    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthQarmaL2Set) != 128);
++    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthOpCacheWay) != 64);
++    QEMU_BUILD_BUG_ON(sizeof(ARMPAuthOpCacheSet) != 128);
+ 
+     if (cpu_isar_feature(aa64_pauth_qarma5, cpu)) {
+         alg = 5;
+@@ -749,9 +748,14 @@ void arm_cpu_sync_fast_cfg(ARMCPU *cpu)
+     }
+     env->pauth_fast = (ARMPAuthFastCfg) {
+         .algorithm = alg,
++        .pauth_feature = (uint8_t)cpu_isar_feature(pauth_feature, cpu),
+         .memo_enabled = cpu->prop_pauth_memo,
+         .memo_stats = cpu->prop_pauth_memo_stats,
+         .va_cache_enabled = true,
++        .op_cache_enabled = cpu->prop_pauth_memo &&
++                            !arm_feature(env, ARM_FEATURE_EL2) &&
++                            !arm_feature(env, ARM_FEATURE_EL3) &&
++                            !arm_feature(env, ARM_FEATURE_M),
+         .has_aa64_bti = cpu_isar_feature(aa64_bti, cpu),
+         .memo_mask = cpu->prop_pauth_memo_entries
+                      ? (cpu->prop_pauth_memo_entries - 1) : 0,
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index 738bbe2..b17de1c 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -158,7 +158,6 @@ typedef struct ARMPAuthMemoEntry {
+     uint64_t result;
+     uint8_t algorithm;
+     bool valid;
+-    uint8_t pad[22];
+ } ARMPAuthMemoEntry;
+ 
+ typedef struct ARMPAuthVACacheSlot {
+@@ -173,32 +172,34 @@ typedef struct ARMPAuthVACacheSlot {
+ 
+ typedef struct ARMPAuthFastCfg {
+     uint8_t algorithm;
++    uint8_t pauth_feature;
+     bool memo_enabled;
+     bool memo_stats;
+     bool va_cache_enabled;
++    bool op_cache_enabled;
+     bool has_aa64_bti;
+-    uint8_t pad[3];
++    uint8_t pad;
+     uint32_t memo_mask;
+ } ARMPAuthFastCfg;
+ 
+-#define ARM_PAUTH_QARMA_L2_BITS 11
+-#define ARM_PAUTH_QARMA_L2_SETS (1 << ARM_PAUTH_QARMA_L2_BITS)
+-#define ARM_PAUTH_QARMA_L2_WAYS 2
++#define ARM_PAUTH_OP_CACHE_BITS 9
++#define ARM_PAUTH_OP_CACHE_SETS (1 << ARM_PAUTH_OP_CACHE_BITS)
++#define ARM_PAUTH_OP_CACHE_WAYS 2
+ 
+-typedef struct ARMPAuthQarmaL2Way {
+-    uint64_t data;
++typedef struct ARMPAuthOpCacheWay {
++    uint64_t in_ptr;
+     uint64_t modifier;
++    uint64_t out_ptr;
+     ARMPACKey key;
+-    uint64_t result;
+-    uint8_t isqarma3;
+-    bool valid;
++    uint64_t tcr_el1;
++    uint32_t state_tag;
+     uint8_t lru;
+-    uint8_t pad[21];
+-} ARMPAuthQarmaL2Way;
++    uint8_t pad[11];
++} ARMPAuthOpCacheWay;
+ 
+-typedef struct ARMPAuthQarmaL2Set {
+-    ARMPAuthQarmaL2Way way[ARM_PAUTH_QARMA_L2_WAYS];
+-} ARMPAuthQarmaL2Set;
++typedef struct ARMPAuthOpCacheSet {
++    ARMPAuthOpCacheWay way[ARM_PAUTH_OP_CACHE_WAYS];
++} ARMPAuthOpCacheSet;
+ 
+ /* See the commentary above the TBFLAG field definitions.  */
+ typedef struct CPUARMTBFlags {
+@@ -830,7 +831,7 @@ typedef struct CPUArchState {
+ 
+     /* Per-vCPU pure-function memoization; reset also clears cached key copies. */
+     ARMPAuthMemoEntry pauth_memo[ARM_PAUTH_MEMO_MAX_ENTRIES];
+-    ARMPAuthQarmaL2Set pauth_qarma_l2[ARM_PAUTH_QARMA_L2_SETS];
++    ARMPAuthOpCacheSet pauth_op_cache[ARM_PAUTH_OP_CACHE_SETS];
+ 
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+index 1e8210a..6a25413 100644
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1489,10 +1489,8 @@ ARMVAParameters aa64_pauth_va_parameters(CPUARMState *env, uint64_t va,
+                                          ARMMMUIdx mmu_idx, bool data);
+ uint64_t arm_pauth_computepac_architected_fast(uint64_t data, uint64_t modifier,
+                                                ARMPACKey key, bool isqarma3);
+-uint64_t arm_pauth_computepac_memo_miss(CPUARMState *env, uint64_t data,
+-                                        uint64_t modifier, ARMPACKey key,
+-                                        bool isqarma3);
+ void arm_pauth_qarma_selftest(void);
++void arm_pauth_op_selftest(void);
+ void arm_cpu_sync_fast_cfg(ARMCPU *cpu);
+ 
+ int aa64_va_parameter_mtx(uint64_t tcr, ARMMMUIdx mmu_idx);
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+index e4b6c0e..d8e8425 100644
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -1165,7 +1165,7 @@ static int cpu_post_load(void *opaque, int version_id)
+     int i, v;
+ 
+     /* Optional derived cache is local to this CPU and is not migrated. */
+-    memset(env->pauth_qarma_l2, 0, sizeof(env->pauth_qarma_l2));
++    memset(env->pauth_op_cache, 0, sizeof(env->pauth_op_cache));
+     arm_cpu_sync_fast_cfg(cpu);
+     memset(env->pauth_memo, 0, sizeof(env->pauth_memo));
+     memset(env->pauth_va_cache, 0, sizeof(env->pauth_va_cache));
+diff --git a/target/arm/tcg/helper-a64-defs.h b/target/arm/tcg/helper-a64-defs.h
+index 55b8566..cd411f1 100644
+--- a/target/arm/tcg/helper-a64-defs.h
++++ b/target/arm/tcg/helper-a64-defs.h
+@@ -99,6 +99,18 @@ DEF_HELPER_FLAGS_3(autdb, TCG_CALL_NO_WG, i64, env, i64, i64)
+ DEF_HELPER_FLAGS_3(autdb_combined, TCG_CALL_NO_WG, i64, env, i64, i64)
+ DEF_HELPER_FLAGS_2(xpaci, TCG_CALL_NO_RWG_SE, i64, env, i64)
+ DEF_HELPER_FLAGS_2(xpacd, TCG_CALL_NO_RWG_SE, i64, env, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_pacia, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_pacib, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_pacda, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_pacdb, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autia, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autia_combined, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autib, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autib_combined, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autda, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autda_combined, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autdb, TCG_CALL_NO_WG, i64, env, i64, i64)
++DEF_HELPER_FLAGS_3(pauth_fast_autdb_combined, TCG_CALL_NO_WG, i64, env, i64, i64)
+ 
+ DEF_HELPER_FLAGS_3(mte_check, TCG_CALL_NO_WG, i64, env, i32, i64)
+ DEF_HELPER_FLAGS_3(mte_check_zva, TCG_CALL_NO_WG, i64, env, i32, i64)
+diff --git a/target/arm/tcg/helper-a64.c b/target/arm/tcg/helper-a64.c
+index 5b0d7ca..a8acb39 100644
+--- a/target/arm/tcg/helper-a64.c
++++ b/target/arm/tcg/helper-a64.c
+@@ -30,6 +30,7 @@
+ #include "qemu/bitops.h"
+ #include "internals.h"
+ #include "qemu/crc32c.h"
++#include "qemu/xxhash.h"
+ #include "exec/cpu-common.h"
+ #include "exec/cputlb.h"
+ #include "accel/tcg/cpu-ldst.h"
+@@ -1810,3 +1811,449 @@ void HELPER(guarded_page_br)(CPUARMState *env, vaddr pc)
+      */
+     env->btype = is_guarded_page(env, pc, GETPC()) ? 3 : 1;
+ }
++
++enum {
++    PAUTH_OP_PACIA = 1,
++    PAUTH_OP_PACIB = 2,
++    PAUTH_OP_PACDA = 3,
++    PAUTH_OP_PACDB = 4,
++    PAUTH_OP_AUTIA = 5,
++    PAUTH_OP_AUTIB = 6,
++    PAUTH_OP_AUTDA = 7,
++    PAUTH_OP_AUTDB = 8,
++};
++
++static inline uint32_t pauth_op_cache_hash(uint64_t ptr, uint64_t mod,
++                                           unsigned op)
++{
++    uint64_t mixed = (ptr >> 2) ^ (ptr >> 14) ^ (ptr >> 26) ^ (ptr >> 38) ^
++                     (mod >> 4) ^ (mod >> 16) ^ (mod >> 28) ^
++                     ((uint64_t)op * UINT64_C(0x9e3779b9));
++    return (uint32_t)mixed & (ARM_PAUTH_OP_CACHE_SETS - 1);
++}
++
++static inline void pauth_op_cache_insert(CPUARMState *env, unsigned op,
++                                         unsigned el, uint64_t tcr,
++                                         ARMPACKey key, uint64_t in_ptr,
++                                         uint64_t mod, uint64_t out_ptr)
++{
++    uint32_t h = pauth_op_cache_hash(in_ptr, mod, op);
++    ARMPAuthOpCacheSet *set = &env->pauth_op_cache[h];
++    uint32_t tag = 0x80000000U | (op << 4) | (el & 3);
++
++    for (int i = 0; i < ARM_PAUTH_OP_CACHE_WAYS; i++) {
++        if (set->way[i].state_tag == tag && set->way[i].in_ptr == in_ptr &&
++            set->way[i].modifier == mod && set->way[i].tcr_el1 == tcr &&
++            set->way[i].key.lo == key.lo && set->way[i].key.hi == key.hi) {
++            set->way[i].out_ptr = out_ptr;
++            set->way[0].lru = (i == 0) ? 1 : 0;
++            return;
++        }
++    }
++
++    int victim = !(set->way[0].state_tag & 0x80000000U) ? 0
++                 : !(set->way[1].state_tag & 0x80000000U) ? 1
++                 : (set->way[0].lru & 1);
++    ARMPAuthOpCacheWay *w = &set->way[victim];
++    w->in_ptr = in_ptr;
++    w->modifier = mod;
++    w->out_ptr = out_ptr;
++    w->key = key;
++    w->tcr_el1 = tcr;
++    w->state_tag = tag;
++    set->way[0].lru = (victim == 0) ? 1 : 0;
++}
++
++static uint64_t pauth_fast_computepac_miss(CPUARMState *env, uint64_t data,
++                                           uint64_t modifier, ARMPACKey key)
++{
++    uint8_t alg = env->pauth_fast.algorithm;
++
++    if (unlikely(alg == 0)) {
++        return qemu_xxhash64_4(data, modifier, key.lo, key.hi);
++    }
++    if (likely(env->pauth_fast.memo_enabled)) {
++        uint32_t slot = (((uint32_t)(data >> 2) ^ (uint32_t)(data >> 32) ^
++                          (uint32_t)(modifier >> 4) ^
++                          (uint32_t)(modifier >> 36)) &
++                         env->pauth_fast.memo_mask);
++        ARMPAuthMemoEntry *entry = &env->pauth_memo[slot];
++        if (entry->valid && entry->data == data &&
++            entry->modifier == modifier && entry->key.lo == key.lo &&
++            entry->key.hi == key.hi && entry->algorithm == alg) {
++            if (env->pauth_fast.memo_stats) {
++                qatomic_set(&env->pauth_memo_hits,
++                            qatomic_read(&env->pauth_memo_hits) + 1);
++            }
++            return entry->result;
++        }
++        if (env->pauth_fast.memo_stats) {
++            qatomic_set(&env->pauth_memo_misses,
++                        qatomic_read(&env->pauth_memo_misses) + 1);
++        }
++        uint64_t res = arm_pauth_computepac_architected_fast(data, modifier,
++                                                             key, alg == 3);
++        *entry = (ARMPAuthMemoEntry) {
++            .data = data, .modifier = modifier, .key = key, .result = res,
++            .algorithm = alg, .valid = true,
++        };
++        return res;
++    }
++    return arm_pauth_computepac_architected_fast(data, modifier, key,
++                                                 alg == 3);
++}
++
++static G_NO_INLINE uint64_t
++pauth_op_miss_pac(CPUARMState *env, uint64_t ptr, uint64_t modifier,
++                  unsigned pac_op, unsigned aut_op, uint32_t en_bit,
++                  ARMPACKey key, bool data)
++{
++    if (unlikely(!env->pauth_fast.op_cache_enabled ||
++                 (env->pstate & PSTATE_nRW))) {
++        switch (pac_op) {
++        case PAUTH_OP_PACIA:
++            return helper_pacia(env, ptr, modifier);
++        case PAUTH_OP_PACIB:
++            return helper_pacib(env, ptr, modifier);
++        case PAUTH_OP_PACDA:
++            return helper_pacda(env, ptr, modifier);
++        default:
++            return helper_pacdb(env, ptr, modifier);
++        }
++    }
++
++    unsigned el = extract32(env->pstate, 2, 2);
++    uint64_t sctlr = env->cp15.sctlr_el[el == 0 ? 1 : el];
++    if (!(sctlr & en_bit)) {
++        return ptr;
++    }
++
++    ARMMMUIdx mmu_idx = (el == 0) ? ARMMMUIdx_Stage1_E0
++                        : ((env->pstate & PSTATE_PAN)
++                           ? ARMMMUIdx_Stage1_E1_PAN : ARMMMUIdx_Stage1_E1);
++    ARMVAParameters param = aa64_pauth_va_parameters(env, ptr, mmu_idx, data);
++    uint8_t pauth_feat = env->pauth_fast.pauth_feature;
++    uint64_t ext = param.tbi ? sextract64(ptr, 55, 1) : sextract64(ptr, 63, 1);
++    int top_bit = 64 - 8 * (param.tbi || param.mtx);
++    int bot_bit = 64 - param.tsz;
++    uint64_t ext_ptr = deposit64(ptr, bot_bit, top_bit - bot_bit, ext);
++
++    if (param.mtx && !param.tbi) {
++        ext_ptr = deposit64(ext_ptr, 60, 4, ext);
++    }
++
++    uint64_t pac = pauth_fast_computepac_miss(env, ext_ptr, modifier, key);
++    uint64_t test = sextract64(ptr, bot_bit, top_bit - bot_bit);
++
++    if (unlikely(test != 0 && test != UINT64_MAX)) {
++        if (pauth_feat >= PauthFeat_2) {
++            /* No action required */
++        } else if (pauth_feat == PauthFeat_EPAC) {
++            pac = 0;
++        } else {
++            pac ^= MAKE_64BIT_MASK(top_bit - 2, 1);
++        }
++    }
++
++    uint64_t orig_in = ptr;
++    if (pauth_feat >= PauthFeat_2) {
++        pac ^= ptr;
++    }
++    if (param.tbi) {
++        ptr &= ~MAKE_64BIT_MASK(bot_bit, 55 - bot_bit + 1);
++        pac &= MAKE_64BIT_MASK(bot_bit, 54 - bot_bit + 1);
++    } else if (param.mtx) {
++        ptr &= ~(MAKE_64BIT_MASK(60, 4) |
++                 MAKE_64BIT_MASK(bot_bit, 55 - bot_bit + 1));
++        pac &= MAKE_64BIT_MASK(60, 4) |
++               MAKE_64BIT_MASK(bot_bit, 54 - bot_bit + 1);
++    } else {
++        ptr &= MAKE_64BIT_MASK(0, bot_bit);
++        pac &= ~(MAKE_64BIT_MASK(55, 1) | MAKE_64BIT_MASK(0, bot_bit));
++    }
++    ext &= MAKE_64BIT_MASK(55, 1);
++    uint64_t out_ptr = pac | ext | ptr;
++    uint64_t tcr = env->cp15.tcr_el[1];
++
++    pauth_op_cache_insert(env, pac_op, el, tcr, key, orig_in, modifier, out_ptr);
++
++    /*
++     * Pre-populate verified inverse AUT mapping when input pointer has
++     * canonical extension bits across pauth_ptr_mask(param) and !mtx, so a
++     * cold function's matching RETAB/AUT* hits the leaf op cache immediately.
++     */
++    if (likely(!param.mtx &&
++               (((orig_in ^ (uint64_t)sextract64(orig_in, 55, 1)) &
++                 pauth_ptr_mask(param)) == 0))) {
++        pauth_op_cache_insert(env, aut_op, el, tcr, key, out_ptr, modifier,
++                              orig_in);
++    }
++    return out_ptr;
++}
++
++static G_NO_INLINE void
++pauth_check_trap_slow(CPUARMState *env, int el, uintptr_t ra)
++{
++    if (el < 2 && arm_is_el2_enabled(env)) {
++        uint64_t hcr = arm_hcr_el2_eff(env);
++        bool trap = !(hcr & HCR_API);
++        if (el == 0) {
++            trap &= (hcr & (HCR_E2H | HCR_TGE)) != (HCR_E2H | HCR_TGE);
++        }
++        if (trap) {
++            raise_exception_ra(env, EXCP_UDEF, syn_pactrap(), 2, ra);
++        }
++    }
++    if (el < 3 && arm_feature(env, ARM_FEATURE_EL3)) {
++        if (!(env->cp15.scr_el3 & SCR_API)) {
++            raise_exception_ra(env, EXCP_UDEF, syn_pactrap(), 3, ra);
++        }
++    }
++}
++
++static G_NO_INLINE uint64_t
++pauth_op_miss_aut(CPUARMState *env, uint64_t ptr, uint64_t modifier,
++                  unsigned aut_op, uint32_t en_bit, ARMPACKey key,
++                  bool data, int keynumber, bool is_combined, uintptr_t ra)
++{
++    bool fast_ok = env->pauth_fast.op_cache_enabled &&
++                   !(env->pstate & PSTATE_nRW);
++    int el = fast_ok ? (int)extract32(env->pstate, 2, 2) : arm_current_el(env);
++    uint64_t sctlr = fast_ok ? env->cp15.sctlr_el[el == 0 ? 1 : el]
++                             : arm_sctlr(env, el);
++
++    if (!(sctlr & en_bit)) {
++        return ptr;
++    }
++    if (unlikely(!fast_ok)) {
++        pauth_check_trap_slow(env, el, ra);
++    }
++
++    ARMMMUIdx mmu_idx = fast_ok
++                        ? ((el == 0) ? ARMMMUIdx_Stage1_E0
++                           : ((env->pstate & PSTATE_PAN)
++                              ? ARMMMUIdx_Stage1_E1_PAN : ARMMMUIdx_Stage1_E1))
++                        : arm_stage1_mmu_idx(env);
++    ARMVAParameters param = aa64_pauth_va_parameters(env, ptr, mmu_idx, data);
++    uint8_t pauth_feat = fast_ok ? env->pauth_fast.pauth_feature
++                                 : (uint8_t)cpu_isar_feature(pauth_feature,
++                                                             env_archcpu(env));
++    uint64_t mask = pauth_ptr_mask(param);
++    uint64_t orig_ptr = extract64(ptr, 55, 1) ? (ptr | mask) : (ptr & ~mask);
++    uint64_t pac = pauth_fast_computepac_miss(env, orig_ptr, modifier, key);
++    int bot_bit = 64 - param.tsz;
++    int top_bit = 64 - 8 * param.tbi;
++    uint64_t cmp_mask = MAKE_64BIT_MASK(bot_bit, top_bit - bot_bit) &
++                        ~MAKE_64BIT_MASK(55, 1);
++
++    if (param.mtx) {
++        cmp_mask &= ~MAKE_64BIT_MASK(56, 4);
++    }
++
++    if (pauth_feat >= PauthFeat_2) {
++        uint8_t fault_feat = is_combined ? PauthFeat_FPACCOMBINED
++                                         : PauthFeat_FPAC;
++        uint64_t result = ptr ^ (pac & cmp_mask);
++
++        if (unlikely(((result ^ (uint64_t)sextract64(result, 55, 1)) &
++                      cmp_mask) != 0)) {
++            if (pauth_feat >= fault_feat) {
++                raise_exception_ra(env, EXCP_UDEF,
++                                   syn_pacfail(data, keynumber),
++                                   exception_target_el(env), ra);
++            }
++            return result;
++        }
++        if (likely(fast_ok)) {
++            pauth_op_cache_insert(env, aut_op, (unsigned)el,
++                                  env->cp15.tcr_el[1], key, ptr, modifier,
++                                  result);
++        }
++        return result;
++    }
++
++    if (unlikely((pac ^ ptr) & cmp_mask)) {
++        int error_code = (keynumber << 1) | (keynumber ^ 1);
++        return param.tbi ? deposit64(orig_ptr, 53, 2, error_code)
++                         : deposit64(orig_ptr, 61, 2, error_code);
++    }
++    if (likely(fast_ok)) {
++        pauth_op_cache_insert(env, aut_op, (unsigned)el,
++                              env->cp15.tcr_el[1], key, ptr, modifier,
++                              orig_ptr);
++    }
++    return orig_ptr;
++}
++
++typedef struct PAuthOpHit {
++    uint64_t val;
++    bool hit;
++} PAuthOpHit;
++
++static inline QEMU_ALWAYS_INLINE PAuthOpHit
++pauth_op_try_hit(CPUARMState *env, uint64_t x, uint64_t y, unsigned op,
++                 uint32_t en_bit, ARMPACKey key)
++{
++    if (likely(env->pauth_fast.op_cache_enabled &&
++               !(env->pstate & PSTATE_nRW))) {
++        unsigned el = (unsigned)(env->pstate >> 2) & 3;
++        uint64_t sctlr = env->cp15.sctlr_el[el == 0 ? 1 : el];
++        if (unlikely(!(sctlr & en_bit))) {
++            return (PAuthOpHit){ .val = x, .hit = true };
++        }
++        uint64_t tcr = env->cp15.tcr_el[1];
++        uint32_t tag = 0x80000000U | (op << 4) | el;
++        uint32_t h = pauth_op_cache_hash(x, y, op);
++        ARMPAuthOpCacheSet *set = &env->pauth_op_cache[h];
++
++        for (int i = 0; i < ARM_PAUTH_OP_CACHE_WAYS; i++) {
++            const ARMPAuthOpCacheWay *w = &set->way[i];
++            if (w->state_tag == tag && w->in_ptr == x && w->modifier == y &&
++                w->tcr_el1 == tcr && w->key.lo == key.lo &&
++                w->key.hi == key.hi) {
++                set->way[0].lru = (i == 0) ? 1 : 0;
++                if (env->pauth_fast.memo_stats) {
++                    qatomic_set(&env->pauth_memo_hits,
++                                qatomic_read(&env->pauth_memo_hits) + 1);
++                }
++                return (PAuthOpHit){ .val = w->out_ptr, .hit = true };
++            }
++        }
++    }
++    return (PAuthOpHit){ .val = 0, .hit = false };
++}
++
++#define DEFINE_PAUTH_FAST_PAC(NAME, PAC_OP, AUT_OP, EN_BIT, KEY_FIELD, DATA) \
++uint64_t HELPER(NAME)(CPUARMState *env, uint64_t x, uint64_t y)              \
++{                                                                            \
++    ARMPACKey key = env->keys.KEY_FIELD;                                     \
++    PAuthOpHit r = pauth_op_try_hit(env, x, y, PAC_OP, EN_BIT, key);         \
++    if (likely(r.hit)) {                                                     \
++        return r.val;                                                        \
++    }                                                                        \
++    return pauth_op_miss_pac(env, x, y, PAC_OP, AUT_OP, EN_BIT, key, DATA);  \
++}
++
++#define DEFINE_PAUTH_FAST_AUT(NAME, AUT_OP, EN_BIT, KEY_FIELD, DATA, KEYNUM, COMB) \
++uint64_t HELPER(NAME)(CPUARMState *env, uint64_t x, uint64_t y)                    \
++{                                                                                  \
++    ARMPACKey key = env->keys.KEY_FIELD;                                           \
++    PAuthOpHit r = pauth_op_try_hit(env, x, y, AUT_OP, EN_BIT, key);               \
++    if (likely(r.hit)) {                                                           \
++        return r.val;                                                              \
++    }                                                                              \
++    return pauth_op_miss_aut(env, x, y, AUT_OP, EN_BIT, key, DATA, KEYNUM, COMB,   \
++                             GETPC());                                             \
++}
++
++DEFINE_PAUTH_FAST_PAC(pauth_fast_pacia, PAUTH_OP_PACIA, PAUTH_OP_AUTIA,
++                      SCTLR_EnIA, apia, false)
++DEFINE_PAUTH_FAST_PAC(pauth_fast_pacib, PAUTH_OP_PACIB, PAUTH_OP_AUTIB,
++                      SCTLR_EnIB, apib, false)
++DEFINE_PAUTH_FAST_PAC(pauth_fast_pacda, PAUTH_OP_PACDA, PAUTH_OP_AUTDA,
++                      SCTLR_EnDA, apda, true)
++DEFINE_PAUTH_FAST_PAC(pauth_fast_pacdb, PAUTH_OP_PACDB, PAUTH_OP_AUTDB,
++                      SCTLR_EnDB, apdb, true)
++
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autia, PAUTH_OP_AUTIA, SCTLR_EnIA,
++                      apia, false, 0, false)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autia_combined, PAUTH_OP_AUTIA, SCTLR_EnIA,
++                      apia, false, 0, true)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autib, PAUTH_OP_AUTIB, SCTLR_EnIB,
++                      apib, false, 1, false)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autib_combined, PAUTH_OP_AUTIB, SCTLR_EnIB,
++                      apib, false, 1, true)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autda, PAUTH_OP_AUTDA, SCTLR_EnDA,
++                      apda, true, 0, false)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autda_combined, PAUTH_OP_AUTDA, SCTLR_EnDA,
++                      apda, true, 0, true)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autdb, PAUTH_OP_AUTDB, SCTLR_EnDB,
++                      apdb, true, 1, false)
++DEFINE_PAUTH_FAST_AUT(pauth_fast_autdb_combined, PAUTH_OP_AUTDB, SCTLR_EnDB,
++                      apdb, true, 1, true)
++
++void arm_pauth_op_selftest(void)
++{
++    g_autofree ARMCPU *cpu = g_new0(ARMCPU, 1);
++    CPUARMState *env = &cpu->env;
++    uint64_t seed = UINT64_C(0x3c6ef372fe94f82b);
++    static const uint8_t feats[3] = {
++        PauthFeat_1, PauthFeat_EPAC, PauthFeat_2
++    };
++
++    env->features = 1ULL << ARM_FEATURE_AARCH64;
++    cpu->prop_pauth_memo = true;
++    cpu->prop_pauth_memo_entries = 1024;
++    cpu->prop_pauth_memo_stats = false;
++    SET_IDREG(&cpu->isar, ID_AA64MMFR0, 0x0000000000100000ULL);
++
++    for (int fi = 0; fi < 3; fi++) {
++        SET_IDREG(&cpu->isar, ID_AA64ISAR1,
++                  FIELD_DP64(0, ID_AA64ISAR1, APA, feats[fi]));
++        memset(env->pauth_memo, 0, sizeof(env->pauth_memo));
++        memset(env->pauth_op_cache, 0, sizeof(env->pauth_op_cache));
++        memset(env->pauth_va_cache, 0, sizeof(env->pauth_va_cache));
++        arm_cpu_sync_fast_cfg(cpu);
++
++        for (int i = 0; i < 4096; i++) {
++            seed += UINT64_C(0x9e3779b97f4a7c15);
++            uint64_t r = (seed ^ (seed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
++            r = (r ^ (r >> 27)) * UINT64_C(0x94d049bb133111eb);
++            r ^= r >> 31;
++
++            env->pstate = ((i & 1) ? PSTATE_MODE_EL1h : PSTATE_MODE_EL0t) |
++                          ((i & 2) ? PSTATE_PAN : 0);
++            env->cp15.sctlr_el[1] = (i % 17 == 0) ? 0
++                : (SCTLR_EnIA | SCTLR_EnIB | SCTLR_EnDA | SCTLR_EnDB);
++            unsigned tsz = 16 + (unsigned)(r & 15);
++            uint64_t tcr = ((uint64_t)tsz) | ((uint64_t)tsz << 16) |
++                           ((r & 0x100) ? (3ULL << 37) : 0) |
++                           ((r & 0x200) ? (3ULL << 51) : 0);
++            env->cp15.tcr_el[1] = tcr;
++            if ((i & 31) == 0) {
++                env->keys.apia = (ARMPACKey){ r, r ^ UINT64_C(0x1111222233334444) };
++                env->keys.apib = (ARMPACKey){ ~r, r + UINT64_C(0x5555666677778888) };
++                env->keys.apda = (ARMPACKey){ r ^ 0xaa55, ~r ^ 0x55aa };
++                env->keys.apdb = (ARMPACKey){ r * 3, r * 5 };
++            }
++
++            int bot = 64 - (int)tsz;
++            uint64_t canon_lo = r & MAKE_64BIT_MASK(0, bot);
++            uint64_t canon_hi = r | ~MAKE_64BIT_MASK(0, bot);
++            uint64_t ptr = (i % 3 == 0) ? canon_lo
++                           : (i % 3 == 1) ? canon_hi : r;
++            uint64_t mod = (r << 13) ^ (r >> 7);
++
++            /* Test PACIB -> hit PACIB -> pre-populated AUTIB/AUTIB_COMBINED -> forged */
++            uint64_t ref_sib = helper_pacib(env, ptr, mod);
++            uint64_t got_sib1 = helper_pauth_fast_pacib(env, ptr, mod);
++            uint64_t got_sib2 = helper_pauth_fast_pacib(env, ptr, mod);
++            g_assert_cmphex(got_sib1, ==, ref_sib);
++            g_assert_cmphex(got_sib2, ==, ref_sib);
++
++            uint64_t ref_aib = helper_autib(env, got_sib1, mod);
++            uint64_t ref_aibc = helper_autib_combined(env, got_sib1, mod);
++            g_assert_cmphex(helper_pauth_fast_autib(env, got_sib1, mod),
++                            ==, ref_aib);
++            g_assert_cmphex(helper_pauth_fast_autib_combined(env, got_sib1, mod),
++                            ==, ref_aibc);
++
++            uint64_t forged = got_sib1 ^ (1ULL << 50);
++            g_assert_cmphex(helper_pauth_fast_autib(env, forged, mod),
++                            ==, helper_autib(env, forged, mod));
++            g_assert_cmphex(helper_pauth_fast_autib_combined(env, forged, mod),
++                            ==, helper_autib_combined(env, forged, mod));
++
++            /* Test PACIA/AUTIA and PACDA/AUTDA */
++            uint64_t ref_sia = helper_pacia(env, ptr, mod);
++            g_assert_cmphex(helper_pauth_fast_pacia(env, ptr, mod), ==, ref_sia);
++            g_assert_cmphex(helper_pauth_fast_autia_combined(env, ref_sia, mod),
++                            ==, helper_autia_combined(env, ref_sia, mod));
++
++            uint64_t ref_sda = helper_pacda(env, ptr, mod);
++            g_assert_cmphex(helper_pauth_fast_pacda(env, ptr, mod), ==, ref_sda);
++            g_assert_cmphex(helper_pauth_fast_autda_combined(env, ref_sda, mod),
++                            ==, helper_autda_combined(env, ref_sda, mod));
++        }
++    }
++}
+diff --git a/target/arm/tcg/hflags.c b/target/arm/tcg/hflags.c
+index 540ba5e..0e66fdb 100644
+--- a/target/arm/tcg/hflags.c
++++ b/target/arm/tcg/hflags.c
+@@ -1183,44 +1183,6 @@ static uint64_t qarma_prng_next(uint64_t *state)
+     return z ^ (z >> 31);
+ }
+ 
+-static inline uint64_t qarma_l2_lookup_or_compute(ARMPAuthQarmaL2Set *sets,
+-                                                  uint64_t data,
+-                                                  uint64_t modifier,
+-                                                  ARMPACKey key,
+-                                                  bool isqarma3)
+-{
+-    uint64_t mixed = (data * UINT64_C(0x9e3779b97f4a7c15)) ^
+-                     (modifier * UINT64_C(0xbf58476d1ce4e5b9)) ^
+-                     (key.lo * UINT64_C(0x94d049bb133111eb));
+-    uint32_t h = (uint32_t)(mixed >> (64 - ARM_PAUTH_QARMA_L2_BITS));
+-    ARMPAuthQarmaL2Set *set = &sets[h];
+-    uint8_t q3 = isqarma3 ? 1 : 0;
+-
+-    for (int i = 0; i < ARM_PAUTH_QARMA_L2_WAYS; i++) {
+-        ARMPAuthQarmaL2Way *w = &set->way[i];
+-        if (w->valid && w->data == data && w->modifier == modifier &&
+-            w->key.lo == key.lo && w->key.hi == key.hi && w->isqarma3 == q3) {
+-            set->way[0].lru = (i == 0) ? 1 : 0;
+-            return w->result;
+-        }
+-    }
+-
+-    uint64_t res = arm_pauth_computepac_architected_fast(data, modifier,
+-                                                         key, isqarma3);
+-    int victim = !set->way[0].valid ? 0
+-                 : !set->way[1].valid ? 1
+-                 : (set->way[0].lru & 1);
+-    ARMPAuthQarmaL2Way *w = &set->way[victim];
+-    w->data = data;
+-    w->modifier = modifier;
+-    w->key = key;
+-    w->result = res;
+-    w->isqarma3 = q3;
+-    w->valid = true;
+-    set->way[0].lru = (victim == 0) ? 1 : 0;
+-    return res;
+-}
+-
+ void arm_pauth_qarma_selftest(void)
+ {
+     static gsize initialized;
+@@ -1249,27 +1211,7 @@ void arm_pauth_qarma_selftest(void)
+             arm_pauth_use_ssse3 = true;
+         }
+ #endif
+-        g_autofree ARMPAuthQarmaL2Set *test_sets =
+-            g_new0(ARMPAuthQarmaL2Set, ARM_PAUTH_QARMA_L2_SETS);
+-        uint64_t l2_seed = UINT64_C(0xbb67ae8584caa73b);
+-        ARMPACKey base_k = {
+-            .lo = qarma_prng_next(&l2_seed),
+-            .hi = qarma_prng_next(&l2_seed),
+-        };
+-        for (int i = 0; i < 512; i++) {
+-            uint64_t d = UINT64_C(0x180001000) + ((uint64_t)i << 12);
+-            uint64_t m = UINT64_C(0x16fd00000) + ((uint64_t)(i & 7) << 4);
+-            bool isq3 = (i & 1) != 0;
+-            uint64_t ref = qarma_scalar_compute(d, m, base_k, isq3);
+-            g_assert_cmphex(qarma_l2_lookup_or_compute(test_sets, d, m,
+-                                                       base_k, isq3), ==, ref);
+-            g_assert_cmphex(qarma_l2_lookup_or_compute(test_sets, d, m,
+-                                                       base_k, isq3), ==, ref);
+-            uint64_t ref_alt = qarma_scalar_compute(d, m, base_k, !isq3);
+-            g_assert_cmphex(qarma_l2_lookup_or_compute(test_sets, d, m,
+-                                                       base_k, !isq3),
+-                            ==, ref_alt);
+-        }
++        arm_pauth_op_selftest();
+         g_once_init_leave(&initialized, 1);
+     }
+ }
+@@ -1284,11 +1226,3 @@ uint64_t arm_pauth_computepac_architected_fast(uint64_t data, uint64_t modifier,
+ #endif
+     return qarma_scalar_compute(data, modifier, key, isqarma3);
+ }
+-
+-uint64_t arm_pauth_computepac_memo_miss(CPUARMState *env, uint64_t data,
+-                                        uint64_t modifier, ARMPACKey key,
+-                                        bool isqarma3)
+-{
+-    return qarma_l2_lookup_or_compute(env->pauth_qarma_l2, data, modifier,
+-                                      key, isqarma3);
+-}
+diff --git a/target/arm/tcg/pauth_helper.c b/target/arm/tcg/pauth_helper.c
+index 519381b..bd45734 100644
+--- a/target/arm/tcg/pauth_helper.c
++++ b/target/arm/tcg/pauth_helper.c
+@@ -280,8 +280,8 @@ static uint64_t pauth_computepac(CPUARMState *env, uint64_t data,
+             qatomic_set(&env->pauth_memo_misses,
+                         qatomic_read(&env->pauth_memo_misses) + 1);
+         }
+-        uint64_t res = arm_pauth_computepac_memo_miss(env, data, modifier,
+-                                                      key, alg == 3);
++        uint64_t res = arm_pauth_computepac_architected_fast(data, modifier,
++                                                             key, alg == 3);
+         *entry = (ARMPAuthMemoEntry) {
+             .data = data, .modifier = modifier, .key = key, .result = res,
+             .algorithm = alg, .valid = true,
+diff --git a/target/arm/tcg/translate-a64.c b/target/arm/tcg/translate-a64.c
+index c8b8542..640788b 100644
+--- a/target/arm/tcg/translate-a64.c
++++ b/target/arm/tcg/translate-a64.c
+@@ -1959,9 +1959,9 @@ static TCGv_i64 auth_branch_target(DisasContext *s, TCGv_i64 dst,
+ 
+     truedst = tcg_temp_new_i64();
+     if (use_key_a) {
+-        gen_helper_autia_combined(truedst, tcg_env, dst, modifier);
++        gen_helper_pauth_fast_autia_combined(truedst, tcg_env, dst, modifier);
+     } else {
+-        gen_helper_autib_combined(truedst, tcg_env, dst, modifier);
++        gen_helper_pauth_fast_autib_combined(truedst, tcg_env, dst, modifier);
+     }
+     return truedst;
+ }
+@@ -2219,7 +2219,7 @@ static bool trans_XPACLRI(DisasContext *s, arg_XPACLRI *a)
+ static bool trans_PACIA1716(DisasContext *s, arg_PACIA1716 *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_pacia(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
++        gen_helper_pauth_fast_pacia(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
+     }
+     return true;
+ }
+@@ -2227,7 +2227,7 @@ static bool trans_PACIA1716(DisasContext *s, arg_PACIA1716 *a)
+ static bool trans_PACIB1716(DisasContext *s, arg_PACIB1716 *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_pacib(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
++        gen_helper_pauth_fast_pacib(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
+     }
+     return true;
+ }
+@@ -2235,7 +2235,7 @@ static bool trans_PACIB1716(DisasContext *s, arg_PACIB1716 *a)
+ static bool trans_AUTIA1716(DisasContext *s, arg_AUTIA1716 *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_autia(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
++        gen_helper_pauth_fast_autia(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
+     }
+     return true;
+ }
+@@ -2243,7 +2243,7 @@ static bool trans_AUTIA1716(DisasContext *s, arg_AUTIA1716 *a)
+ static bool trans_AUTIB1716(DisasContext *s, arg_AUTIB1716 *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_autib(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
++        gen_helper_pauth_fast_autib(cpu_X[17], tcg_env, cpu_X[17], cpu_X[16]);
+     }
+     return true;
+ }
+@@ -2279,7 +2279,8 @@ static bool trans_GCSB(DisasContext *s, arg_GCSB *a)
+ static bool trans_PACIAZ(DisasContext *s, arg_PACIAZ *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_pacia(cpu_X[30], tcg_env, cpu_X[30], tcg_constant_i64(0));
++        gen_helper_pauth_fast_pacia(cpu_X[30], tcg_env, cpu_X[30],
++                                    tcg_constant_i64(0));
+     }
+     return true;
+ }
+@@ -2287,7 +2288,7 @@ static bool trans_PACIAZ(DisasContext *s, arg_PACIAZ *a)
+ static bool trans_PACIASP(DisasContext *s, arg_PACIASP *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_pacia(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
++        gen_helper_pauth_fast_pacia(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
+     }
+     return true;
+ }
+@@ -2295,7 +2296,8 @@ static bool trans_PACIASP(DisasContext *s, arg_PACIASP *a)
+ static bool trans_PACIBZ(DisasContext *s, arg_PACIBZ *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_pacib(cpu_X[30], tcg_env, cpu_X[30], tcg_constant_i64(0));
++        gen_helper_pauth_fast_pacib(cpu_X[30], tcg_env, cpu_X[30],
++                                    tcg_constant_i64(0));
+     }
+     return true;
+ }
+@@ -2303,7 +2305,7 @@ static bool trans_PACIBZ(DisasContext *s, arg_PACIBZ *a)
+ static bool trans_PACIBSP(DisasContext *s, arg_PACIBSP *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_pacib(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
++        gen_helper_pauth_fast_pacib(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
+     }
+     return true;
+ }
+@@ -2311,7 +2313,8 @@ static bool trans_PACIBSP(DisasContext *s, arg_PACIBSP *a)
+ static bool trans_AUTIAZ(DisasContext *s, arg_AUTIAZ *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_autia(cpu_X[30], tcg_env, cpu_X[30], tcg_constant_i64(0));
++        gen_helper_pauth_fast_autia(cpu_X[30], tcg_env, cpu_X[30],
++                                    tcg_constant_i64(0));
+     }
+     return true;
+ }
+@@ -2319,7 +2322,7 @@ static bool trans_AUTIAZ(DisasContext *s, arg_AUTIAZ *a)
+ static bool trans_AUTIASP(DisasContext *s, arg_AUTIASP *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_autia(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
++        gen_helper_pauth_fast_autia(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
+     }
+     return true;
+ }
+@@ -2327,7 +2330,8 @@ static bool trans_AUTIASP(DisasContext *s, arg_AUTIASP *a)
+ static bool trans_AUTIBZ(DisasContext *s, arg_AUTIBZ *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_autib(cpu_X[30], tcg_env, cpu_X[30], tcg_constant_i64(0));
++        gen_helper_pauth_fast_autib(cpu_X[30], tcg_env, cpu_X[30],
++                                    tcg_constant_i64(0));
+     }
+     return true;
+ }
+@@ -2335,7 +2339,7 @@ static bool trans_AUTIBZ(DisasContext *s, arg_AUTIBZ *a)
+ static bool trans_AUTIBSP(DisasContext *s, arg_AUTIBSP *a)
+ {
+     if (s->pauth_active) {
+-        gen_helper_autib(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
++        gen_helper_pauth_fast_autib(cpu_X[30], tcg_env, cpu_X[30], cpu_X[31]);
+     }
+     return true;
+ }
+@@ -4378,11 +4382,13 @@ static bool trans_LDRA(DisasContext *s, arg_LDRA *a)
+ 
+     if (s->pauth_active) {
+         if (!a->m) {
+-            gen_helper_autda_combined(dirty_addr, tcg_env, dirty_addr,
+-                                      tcg_constant_i64(0));
++            gen_helper_pauth_fast_autda_combined(dirty_addr, tcg_env,
++                                                 dirty_addr,
++                                                 tcg_constant_i64(0));
+         } else {
+-            gen_helper_autdb_combined(dirty_addr, tcg_env, dirty_addr,
+-                                      tcg_constant_i64(0));
++            gen_helper_pauth_fast_autdb_combined(dirty_addr, tcg_env,
++                                                 dirty_addr,
++                                                 tcg_constant_i64(0));
+         }
+     }
+ 
+@@ -9134,15 +9140,15 @@ static bool gen_pacaut(DisasContext *s, arg_pacaut *a, NeonGenTwo64OpEnvFn fn)
+     return true;
+ }
+ 
+-TRANS_FEAT(PACIA, aa64_pauth, gen_pacaut, a, gen_helper_pacia)
+-TRANS_FEAT(PACIB, aa64_pauth, gen_pacaut, a, gen_helper_pacib)
+-TRANS_FEAT(PACDA, aa64_pauth, gen_pacaut, a, gen_helper_pacda)
+-TRANS_FEAT(PACDB, aa64_pauth, gen_pacaut, a, gen_helper_pacdb)
++TRANS_FEAT(PACIA, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_pacia)
++TRANS_FEAT(PACIB, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_pacib)
++TRANS_FEAT(PACDA, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_pacda)
++TRANS_FEAT(PACDB, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_pacdb)
+ 
+-TRANS_FEAT(AUTIA, aa64_pauth, gen_pacaut, a, gen_helper_autia)
+-TRANS_FEAT(AUTIB, aa64_pauth, gen_pacaut, a, gen_helper_autib)
+-TRANS_FEAT(AUTDA, aa64_pauth, gen_pacaut, a, gen_helper_autda)
+-TRANS_FEAT(AUTDB, aa64_pauth, gen_pacaut, a, gen_helper_autdb)
++TRANS_FEAT(AUTIA, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_autia)
++TRANS_FEAT(AUTIB, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_autib)
++TRANS_FEAT(AUTDA, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_autda)
++TRANS_FEAT(AUTDB, aa64_pauth, gen_pacaut, a, gen_helper_pauth_fast_autdb)
+ 
+ static bool do_xpac(DisasContext *s, int rd, NeonGenOne64OpEnvFn *fn)
+ {

@@ -1,3 +1,15 @@
+From: macos-local research
+Subject: [PATCH] Handle the vmapple PAC HVCs without the BQL and cache user keys
+
+Let a board claim an AArch64 EL1 HVC through try_board_hvc() before the
+exception is raised. When the vmapple PAC model handles it, the
+instruction completes inline, without the exception or the BQL; any HVC
+it does not handle, and every HVC while single-stepping or with -d int,
+is raised as before. The PAC key state is per vCPU, the key derivation
+uses a self-contained HMAC-SHA256 that is checked against GLib's at
+machine init, and a 64-entry per-vCPU cache keeps the derived user keys
+of recent (A, B, diversifier) tuples.
+
 diff --git a/hw/vmapple/vmapple.c b/hw/vmapple/vmapple.c
 index f356b20a74..05bbbc1215 100644
 --- a/hw/vmapple/vmapple.c

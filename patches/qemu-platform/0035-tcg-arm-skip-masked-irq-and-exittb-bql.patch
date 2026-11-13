@@ -1,3 +1,15 @@
+From: macos-local research
+Subject: [PATCH] Skip the BQL for EXITTB and for interrupts that are all masked
+
+cpu_handle_interrupt() took the BQL whenever interrupt_request was
+non-zero. Clear CPU_INTERRUPT_EXITTB without it, and add an optional
+TCGCPUOps::cpu_has_unmasked_interrupt() hook that is checked lock-free
+first: when every pending interrupt is masked, the slow path is skipped.
+The ARM hook shares arm_find_unmasked_interrupt() with
+arm_cpu_exec_interrupt(), so both apply the same masking rules. The
+pre-check is not used under record/replay, with SSTEP_NOIRQ, or for
+DEBUG, HALT and RESET requests.
+
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
 index b3add9b117..9ed8712581 100644
 --- a/accel/tcg/cpu-exec.c

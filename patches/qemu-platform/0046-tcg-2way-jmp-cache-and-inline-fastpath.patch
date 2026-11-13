@@ -1,0 +1,472 @@
+From: macos-local research
+Subject: [PATCH] 64B cache-line-aligned 2-way CPUJumpCache and inline L1 hit fastpath
+
+Convert CPUJumpCache into 8,192 64-byte 2-way set-associative sets (16,384
+entries total) with 1-bit LRU replacement and cached mmu_idx, eliminating
+direct-mapped QHT fallback contention and indirect mmu_index virtual calls on
+L1 hits. Split refills/misses into QEMU_NOINLINE tb_lookup_slow() so the
+register-only L1 hit path inlines into helper_lookup_tb_ptr without stack
+canaries or nested stack frames.
+
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 6d6fa34..9151d5b 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -216,18 +216,37 @@ static TranslationBlock *tb_htable_lookup(CPUState *cpu, const TCGTBCPUState *s)
+     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+ }
+ #else
+-static inline bool tb_jmp_cache_code_host_match(CPUState *cpu, vaddr pc,
+-                                                uintptr_t expected_host_pc)
++static inline QEMU_ALWAYS_INLINE
++bool tb_jmp_cache_way_match_fast(CPUState *cpu, const TCGTBCPUState *s,
++                                 vaddr page_mask, uint32_t page_bits,
++                                 const CPUJumpCacheWay *w,
++                                 TranslationBlock **out_tb)
+ {
+-    int mmu_idx = cpu_mmu_index(cpu, true);
+-    CPUTLBDescFast *fast = cpu_tlb_fast(cpu, mmu_idx);
+-    uintptr_t idx = (pc >> TARGET_PAGE_BITS) &
+-                    (fast->mask >> CPU_TLB_ENTRY_BITS);
+-    const CPUTLBEntry *entry = &fast->table[idx];
+-    uintptr_t tlb_code = qatomic_read(&entry->addr_code);
+-
+-    return likely(tlb_code == (pc & TARGET_PAGE_MASK)) &&
+-           likely(((uintptr_t)pc + entry->addend) == expected_host_pc);
++    TranslationBlock *tb = qatomic_read(&w->tb);
++
++    if (likely(tb &&
++               w->pc == s->pc &&
++               w->host_pc != 0 &&
++               tb->cs_base == s->cs_base &&
++               tb->flags == s->flags &&
++               tb_cflags(tb) == s->cflags)) {
++        int mmu_idx = w->mmu_idx;
++        CPUTLBDescFast *fast = cpu_tlb_fast(cpu, mmu_idx);
++        uintptr_t idx = (s->pc >> page_bits) &
++                        (fast->mask >> CPU_TLB_ENTRY_BITS);
++        const CPUTLBEntry *entry = &fast->table[idx];
++        uintptr_t tlb_code = qatomic_read(&entry->addr_code);
++
++#ifdef CONFIG_DEBUG_TCG
++        assert(mmu_idx == cpu_mmu_index(cpu, true));
++#endif
++        if (likely(tlb_code == (s->pc & page_mask)) &&
++            likely(((uintptr_t)s->pc + entry->addend) == w->host_pc)) {
++            *out_tb = tb;
++            return true;
++        }
++    }
++    return false;
+ }
+ 
+ static TranslationBlock *tb_htable_lookup_phys(CPUState *cpu,
+@@ -244,6 +263,61 @@ static TranslationBlock *tb_htable_lookup_phys(CPUState *cpu,
+                      s->flags, s->cs_base, s->cflags);
+     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+ }
++
++static G_NO_INLINE TranslationBlock *
++tb_lookup_slow(CPUState *cpu, const TCGTBCPUState *s, CPUJumpCacheSet *set)
++{
++    void *host_pc = NULL;
++    tb_page_addr_t phys_pc;
++    TranslationBlock *tb;
++
++    phys_pc = get_page_addr_code_hostp(cpu_env(cpu), s->pc, &host_pc);
++    if (unlikely(phys_pc == -1)) {
++        return NULL;
++    }
++
++    uint8_t mmu_idx = (uint8_t)cpu_mmu_index(cpu, true);
++    for (int i = 0; i < TB_JMP_CACHE_WAYS; i++) {
++        CPUJumpCacheWay *w = &set->way[i];
++        tb = qatomic_read(&w->tb);
++        if (tb &&
++            w->pc == s->pc &&
++            tb->cs_base == s->cs_base &&
++            tb->flags == s->flags &&
++            tb_cflags(tb) == s->cflags &&
++            tb_page_addr1(tb) == -1 &&
++            tb_page_addr0(tb) == phys_pc) {
++            w->host_pc = (uintptr_t)host_pc;
++            w->mmu_idx = mmu_idx;
++            set->way[0].lru = (i == 0) ? 1 : 0;
++            assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
++            return tb;
++        }
++    }
++
++    tb = tb_htable_lookup_phys(cpu, s, phys_pc);
++    if (tb == NULL) {
++        return NULL;
++    }
++
++    if (likely(tb_page_addr1(tb) == -1 && host_pc != NULL &&
++               !(tb_cflags(tb) & CF_INVALID))) {
++        int victim = (qatomic_read(&set->way[0].tb) == NULL) ? 0
++                     : (qatomic_read(&set->way[1].tb) == NULL) ? 1
++                     : (set->way[0].lru & 1);
++        CPUJumpCacheWay *w = &set->way[victim];
++
++        qatomic_set(&w->tb, NULL);
++        w->pc = s->pc;
++        w->host_pc = (uintptr_t)host_pc;
++        w->mmu_idx = mmu_idx;
++        set->way[0].lru = (victim == 0) ? 1 : 0;
++        qatomic_store_release(&w->tb, tb);
++    }
++
++    assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
++    return tb;
++}
+ #endif
+ 
+ /**
+@@ -257,26 +331,33 @@ static TranslationBlock *tb_htable_lookup_phys(CPUState *cpu,
+  *
+  * Returns: an existing translation block or NULL.
+  */
+-static inline TranslationBlock *tb_lookup(CPUState *cpu, const TCGTBCPUState *s)
++static inline QEMU_ALWAYS_INLINE
++TranslationBlock *tb_lookup(CPUState *cpu, const TCGTBCPUState *s)
+ {
+     TranslationBlock *tb;
+     CPUJumpCache *jc;
++    CPUJumpCacheSet *set;
+     uint32_t hash;
+ 
+     /* we should never be trying to look up an INVALID tb */
+     tcg_debug_assert(!(s->cflags & CF_INVALID));
+ 
+-    hash = tb_jmp_cache_hash_func(s->pc);
+     jc = cpu->tb_jmp_cache;
+ 
+ #ifdef CONFIG_USER_ONLY
+-    tb = qatomic_read(&jc->array[hash].tb);
+-    if (likely(tb &&
+-               jc->array[hash].pc == s->pc &&
+-               tb->cs_base == s->cs_base &&
+-               tb->flags == s->flags &&
+-               tb_cflags(tb) == s->cflags)) {
+-        goto hit;
++    hash = tb_jmp_cache_hash_func(s->pc);
++    set = &jc->sets[hash];
++    for (int i = 0; i < TB_JMP_CACHE_WAYS; i++) {
++        tb = qatomic_read(&set->way[i].tb);
++        if (likely(tb &&
++                   set->way[i].pc == s->pc &&
++                   tb->cs_base == s->cs_base &&
++                   tb->flags == s->flags &&
++                   tb_cflags(tb) == s->cflags)) {
++            set->way[0].lru = (i == 0) ? 1 : 0;
++            assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
++            return tb;
++        }
+     }
+ 
+     tb = tb_htable_lookup(cpu, s);
+@@ -284,64 +365,37 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, const TCGTBCPUState *s)
+         return NULL;
+     }
+ 
+-    jc->array[hash].pc = s->pc;
+-    qatomic_set(&jc->array[hash].tb, tb);
++    int victim = (qatomic_read(&set->way[0].tb) == NULL) ? 0
++                 : (qatomic_read(&set->way[1].tb) == NULL) ? 1
++                 : (set->way[0].lru & 1);
++    qatomic_set(&set->way[victim].tb, NULL);
++    set->way[victim].pc = s->pc;
++    set->way[0].lru = (victim == 0) ? 1 : 0;
++    qatomic_store_release(&set->way[victim].tb, tb);
++    assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
++    return tb;
+ #else
+-    void *host_pc = NULL;
+-    tb_page_addr_t phys_pc;
++    uint32_t page_bits = TARGET_PAGE_BITS;
++    vaddr page_mask = TARGET_PAGE_MASK;
+ 
+-    tb = qatomic_read(&jc->array[hash].tb);
+-    if (likely(tb &&
+-               jc->array[hash].pc == s->pc &&
+-               tb->cs_base == s->cs_base &&
+-               tb->flags == s->flags &&
+-               tb_cflags(tb) == s->cflags)) {
+-        if (likely(jc->array[hash].host_pc != 0 &&
+-                   tb_jmp_cache_code_host_match(cpu, s->pc,
+-                                                jc->array[hash].host_pc))) {
+-            goto hit;
+-        }
+-        phys_pc = get_page_addr_code_hostp(cpu_env(cpu), s->pc, &host_pc);
+-        if (unlikely(phys_pc == -1)) {
+-            return NULL;
+-        }
+-        tb = qatomic_read(&jc->array[hash].tb);
+-        if (likely(tb &&
+-                   jc->array[hash].pc == s->pc &&
+-                   tb->cs_base == s->cs_base &&
+-                   tb->flags == s->flags &&
+-                   tb_cflags(tb) == s->cflags &&
+-                   tb_page_addr1(tb) == -1 &&
+-                   tb_page_addr0(tb) == phys_pc)) {
+-            jc->array[hash].host_pc = (uintptr_t)host_pc;
+-            goto hit;
+-        }
+-    } else {
+-        phys_pc = get_page_addr_code_hostp(cpu_env(cpu), s->pc, &host_pc);
+-        if (unlikely(phys_pc == -1)) {
+-            return NULL;
+-        }
+-    }
++    hash = tb_jmp_cache_hash_func_mask(s->pc, page_bits, page_mask);
++    set = &jc->sets[hash];
+ 
+-    tb = tb_htable_lookup_phys(cpu, s, phys_pc);
+-    if (tb == NULL) {
+-        return NULL;
++    if (likely(tb_jmp_cache_way_match_fast(cpu, s, page_mask, page_bits,
++                                           &set->way[0], &tb))) {
++        set->way[0].lru = 1;
++        assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
++        return tb;
+     }
+-
+-    if (likely(tb_page_addr1(tb) == -1 && host_pc != NULL)) {
+-        jc->array[hash].pc = s->pc;
+-        jc->array[hash].host_pc = (uintptr_t)host_pc;
+-        qatomic_set(&jc->array[hash].tb, tb);
++    if (tb_jmp_cache_way_match_fast(cpu, s, page_mask, page_bits,
++                                    &set->way[1], &tb)) {
++        set->way[0].lru = 0;
++        assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
++        return tb;
+     }
+-#endif
+ 
+-hit:
+-    /*
+-     * As long as tb is not NULL, the contents are consistent.  Therefore,
+-     * the virtual PC has to match for non-CF_PCREL translations.
+-     */
+-    assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s->pc);
+-    return tb;
++    return tb_lookup_slow(cpu, s, set);
++#endif
+ }
+ 
+ static void log_cpu_exec(vaddr pc, CPUState *cpu,
+@@ -1080,16 +1134,33 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+ #ifdef CONFIG_USER_ONLY
+                 h = tb_jmp_cache_hash_func(s.pc);
+                 jc = cpu->tb_jmp_cache;
+-                jc->array[h].pc = s.pc;
+-                qatomic_set(&jc->array[h].tb, tb);
++                {
++                    CPUJumpCacheSet *set = &jc->sets[h];
++                    int victim = (qatomic_read(&set->way[0].tb) == NULL) ? 0
++                                 : (qatomic_read(&set->way[1].tb) == NULL) ? 1
++                                 : (set->way[0].lru & 1);
++                    qatomic_set(&set->way[victim].tb, NULL);
++                    set->way[victim].pc = s.pc;
++                    set->way[0].lru = (victim == 0) ? 1 : 0;
++                    qatomic_store_release(&set->way[victim].tb, tb);
++                }
+ #else
+                 if (likely(tb_page_addr1(tb) == -1 &&
+-                           tb_page_addr0(tb) != -1)) {
++                           tb_page_addr0(tb) != -1 &&
++                           !(tb_cflags(tb) & CF_INVALID))) {
+                     h = tb_jmp_cache_hash_func(s.pc);
+                     jc = cpu->tb_jmp_cache;
+-                    jc->array[h].pc = s.pc;
+-                    jc->array[h].host_pc = 0;
+-                    qatomic_set(&jc->array[h].tb, tb);
++                    CPUJumpCacheSet *set = &jc->sets[h];
++                    int victim = (qatomic_read(&set->way[0].tb) == NULL) ? 0
++                                 : (qatomic_read(&set->way[1].tb) == NULL) ? 1
++                                 : (set->way[0].lru & 1);
++                    CPUJumpCacheWay *w = &set->way[victim];
++                    qatomic_set(&w->tb, NULL);
++                    w->pc = s.pc;
++                    w->host_pc = 0;
++                    w->mmu_idx = 0;
++                    set->way[0].lru = (victim == 0) ? 1 : 0;
++                    qatomic_store_release(&w->tb, tb);
+                 }
+ #endif
+             }
+diff --git a/accel/tcg/tb-hash.h b/accel/tcg/tb-hash.h
+index dde52fc..0a74bf3 100644
+--- a/accel/tcg/tb-hash.h
++++ b/accel/tcg/tb-hash.h
+@@ -34,7 +34,7 @@
+ #define TB_JMP_PAGE_BITS 6
+ #define TB_JMP_PAGE_SIZE (1 << TB_JMP_PAGE_BITS)
+ #define TB_JMP_ADDR_MASK (TB_JMP_PAGE_SIZE - 1)
+-#define TB_JMP_PAGE_MASK (TB_JMP_CACHE_SIZE - TB_JMP_PAGE_SIZE)
++#define TB_JMP_PAGE_MASK (TB_JMP_CACHE_SETS - TB_JMP_PAGE_SIZE)
+ 
+ static inline unsigned int tb_jmp_cache_hash_page(vaddr pc)
+ {
+@@ -49,9 +49,22 @@ static inline unsigned int tb_jmp_cache_hash_offset(vaddr pc)
+     return ((ofs >> 2) ^ (ofs >> 8) ^ ofs) & TB_JMP_ADDR_MASK;
+ }
+ 
++static inline unsigned int tb_jmp_cache_hash_func_mask(vaddr pc,
++                                                       uint32_t page_bits,
++                                                       vaddr page_mask)
++{
++    vaddr vpn = pc >> page_bits;
++    vaddr ofs = pc & ~page_mask;
++    unsigned int p = ((vpn ^ (vpn >> 8) ^ (vpn >> 16)) << TB_JMP_PAGE_BITS)
++                     & TB_JMP_PAGE_MASK;
++    unsigned int o = ((ofs >> 2) ^ (ofs >> 8) ^ ofs) & TB_JMP_ADDR_MASK;
++
++    return p | o;
++}
++
+ static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
+ {
+-    return tb_jmp_cache_hash_page(pc) | tb_jmp_cache_hash_offset(pc);
++    return tb_jmp_cache_hash_func_mask(pc, TARGET_PAGE_BITS, TARGET_PAGE_MASK);
+ }
+ 
+ #else
+@@ -59,7 +72,7 @@ static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
+ /* In user-mode we can get better hashing because we do not have a TLB */
+ static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
+ {
+-    return (pc ^ (pc >> TB_JMP_CACHE_BITS)) & (TB_JMP_CACHE_SIZE - 1);
++    return (pc ^ (pc >> TB_JMP_CACHE_BITS)) & (TB_JMP_CACHE_SETS - 1);
+ }
+ 
+ #endif /* CONFIG_SOFTMMU */
+diff --git a/accel/tcg/tb-jmp-cache.h b/accel/tcg/tb-jmp-cache.h
+index 6a6bced..fe6ef85 100644
+--- a/accel/tcg/tb-jmp-cache.h
++++ b/accel/tcg/tb-jmp-cache.h
+@@ -12,8 +12,10 @@
+ #include "qemu/rcu.h"
+ #include "exec/cpu-common.h"
+ 
+-#define TB_JMP_CACHE_BITS 14
+-#define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
++#define TB_JMP_CACHE_BITS 13
++#define TB_JMP_CACHE_SETS (1 << TB_JMP_CACHE_BITS)
++#define TB_JMP_CACHE_WAYS 2
++#define TB_JMP_CACHE_SIZE (TB_JMP_CACHE_SETS * TB_JMP_CACHE_WAYS)
+ 
+ /*
+  * Invalidated in parallel; all accesses to 'tb' must be atomic.
+@@ -21,14 +23,30 @@
+  * no need for qatomic_rcu_read() and pc is always consistent with a
+  * non-NULL value of 'tb'.  Strictly speaking pc is only needed for
+  * CF_PCREL, but it's used always for simplicity.
++ *
++ * Each 2-way set occupies exactly one 64-byte cache line; way[0].lru
++ * selects the replacement victim (0 or 1) within the set.
+  */
++typedef struct CPUJumpCacheWay {
++    TranslationBlock *tb;
++    vaddr pc;
++    uintptr_t host_pc;
++    uint8_t mmu_idx;
++    uint8_t lru;
++    uint8_t pad[6];
++} CPUJumpCacheWay;
++
++typedef struct CPUJumpCacheSet {
++    CPUJumpCacheWay way[TB_JMP_CACHE_WAYS];
++} CPUJumpCacheSet;
++
++QEMU_BUILD_BUG_ON(sizeof(CPUJumpCacheWay) != 32);
++QEMU_BUILD_BUG_ON(sizeof(CPUJumpCacheSet) != 64);
++
+ typedef struct CPUJumpCache {
+     struct rcu_head rcu;
+-    struct {
+-        TranslationBlock *tb;
+-        vaddr pc;
+-        uintptr_t host_pc;
+-    } array[TB_JMP_CACHE_SIZE];
++    uint8_t head_pad[64 - sizeof(struct rcu_head)];
++    CPUJumpCacheSet sets[TB_JMP_CACHE_SETS];
+ } CPUJumpCache;
+ 
+ #endif /* ACCEL_TCG_TB_JMP_CACHE_H */
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+index e2e078d..f2cfdc0 100644
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -909,10 +909,13 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
+                 if (unlikely(!jc)) {
+                     continue;
+                 }
+-                for (unsigned int p = 0; p < TB_JMP_CACHE_SIZE;
++                for (unsigned int p = 0; p < TB_JMP_CACHE_SETS;
+                      p += TB_JMP_PAGE_SIZE) {
+-                    if (unlikely(qatomic_read(&jc->array[p + ofs].tb) == tb)) {
+-                        qatomic_set(&jc->array[p + ofs].tb, NULL);
++                    CPUJumpCacheSet *set = &jc->sets[p + ofs];
++                    for (int w = 0; w < TB_JMP_CACHE_WAYS; w++) {
++                        if (unlikely(qatomic_read(&set->way[w].tb) == tb)) {
++                            qatomic_set(&set->way[w].tb, NULL);
++                        }
+                     }
+                 }
+             }
+@@ -926,9 +929,12 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
+             if (unlikely(!jc)) {
+                 continue;
+             }
+-            for (unsigned int i = 0; i < TB_JMP_CACHE_SIZE; i++) {
+-                if (unlikely(qatomic_read(&jc->array[i].tb) == tb)) {
+-                    qatomic_set(&jc->array[i].tb, NULL);
++            for (unsigned int i = 0; i < TB_JMP_CACHE_SETS; i++) {
++                CPUJumpCacheSet *set = &jc->sets[i];
++                for (int w = 0; w < TB_JMP_CACHE_WAYS; w++) {
++                    if (unlikely(qatomic_read(&set->way[w].tb) == tb)) {
++                        qatomic_set(&set->way[w].tb, NULL);
++                    }
+                 }
+             }
+         }
+@@ -938,8 +944,13 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
+         CPU_FOREACH(cpu) {
+             CPUJumpCache *jc = cpu->tb_jmp_cache;
+ 
+-            if (jc && unlikely(qatomic_read(&jc->array[h].tb) == tb)) {
+-                qatomic_set(&jc->array[h].tb, NULL);
++            if (jc) {
++                CPUJumpCacheSet *set = &jc->sets[h];
++                for (int w = 0; w < TB_JMP_CACHE_WAYS; w++) {
++                    if (unlikely(qatomic_read(&set->way[w].tb) == tb)) {
++                        qatomic_set(&set->way[w].tb, NULL);
++                    }
++                }
+             }
+         }
+     }
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+index f7a63d4..b46f81d 100644
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -632,10 +632,13 @@ void tcg_flush_jmp_cache(CPUState *cpu)
+         return;
+     }
+ 
+-    for (int i = 0; i < TB_JMP_CACHE_SIZE; i++) {
+-        if (qatomic_read(&jc->array[i].tb) != NULL) {
+-            qatomic_set(&jc->array[i].tb, NULL);
+-            jc->array[i].host_pc = 0;
++    for (int i = 0; i < TB_JMP_CACHE_SETS; i++) {
++        CPUJumpCacheSet *set = &jc->sets[i];
++        for (int w = 0; w < TB_JMP_CACHE_WAYS; w++) {
++            if (qatomic_read(&set->way[w].tb) != NULL) {
++                qatomic_set(&set->way[w].tb, NULL);
++                set->way[w].host_pc = 0;
++            }
+         }
+     }
+ }

@@ -1,0 +1,382 @@
+From: macos-local research
+Subject: [PATCH] Bit-exact x86_64 F16C+AVX2+FMA float16_muladd / gvec_fmla_idx_h and 512 KiB 256-bucket CPUJumpCache
+
+Accelerate IEEE-754 float16_muladd_scalbn() and 4/8-lane AdvSIMD/SVE
+gvec_fmla_idx_h / gvec_fmls_idx_h on x86_64 F16C+AVX2+FMA hosts via exact
+binary64 FMA with non-midpoint single-step integer rounding and exact
+float_flag_inexact maintenance, falling back to softfloat on subnormals,
+Inf/NaN, non-RNE modes, out-of-range exponents, or ties. Tune CPUJumpCache to
+8,192 2-way sets (512 KiB) with TB_JMP_PAGE_BITS=5 (256 page buckets).
+
+diff --git a/accel/tcg/tb-hash.h b/accel/tcg/tb-hash.h
+index 0a74bf3..a6cd1fc 100644
+--- a/accel/tcg/tb-hash.h
++++ b/accel/tcg/tb-hash.h
+@@ -31,7 +31,7 @@
+ /* Only the bottom TB_JMP_PAGE_BITS of the jump cache hash bits vary for
+    addresses on the same page.  The top bits are the same.  This allows
+    TLB invalidation to quickly clear a subset of the hash table.  */
+-#define TB_JMP_PAGE_BITS 6
++#define TB_JMP_PAGE_BITS 5
+ #define TB_JMP_PAGE_SIZE (1 << TB_JMP_PAGE_BITS)
+ #define TB_JMP_ADDR_MASK (TB_JMP_PAGE_SIZE - 1)
+ #define TB_JMP_PAGE_MASK (TB_JMP_CACHE_SETS - TB_JMP_PAGE_SIZE)
+diff --git a/accel/tcg/tb-jmp-cache.h b/accel/tcg/tb-jmp-cache.h
+index d2b9277..fe6ef85 100644
+--- a/accel/tcg/tb-jmp-cache.h
++++ b/accel/tcg/tb-jmp-cache.h
+@@ -12,7 +12,7 @@
+ #include "qemu/rcu.h"
+ #include "exec/cpu-common.h"
+ 
+-#define TB_JMP_CACHE_BITS 14
++#define TB_JMP_CACHE_BITS 13
+ #define TB_JMP_CACHE_SETS (1 << TB_JMP_CACHE_BITS)
+ #define TB_JMP_CACHE_WAYS 2
+ #define TB_JMP_CACHE_SIZE (TB_JMP_CACHE_SETS * TB_JMP_CACHE_WAYS)
+diff --git a/fpu/softfloat.c b/fpu/softfloat.c
+index bc244a4..40b7434 100644
+--- a/fpu/softfloat.c
++++ b/fpu/softfloat.c
+@@ -84,6 +84,11 @@ this code that are retained.
+ #include "qemu/bitops.h"
+ #include "fpu/softfloat.h"
+ #include "fpu/softfloat-parts.h"
++#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(__FAST_MATH__)
++#include <immintrin.h>
++#define QEMU_SOFTFLOAT_HAVE_X86_F16C_FMA 1
++static bool use_x86_f16c_fma;
++#endif
+ 
+ /* We only need stdlib for abort() */
+ 
+@@ -1916,9 +1921,81 @@ floatx80_mul(floatx80 a, floatx80 b, float_status *status)
+  * Fused multiply-add
+  */
+ 
++#ifdef QEMU_SOFTFLOAT_HAVE_X86_F16C_FMA
++typedef struct F16FmaFastResult {
++    float16 val;
++    bool hit;
++} F16FmaFastResult;
++
++static inline bool f16_bits_normal_or_zero(uint16_t h)
++{
++    uint16_t abs_h = h & 0x7fffU;
++    return abs_h == 0 || (abs_h >= 0x0400U && abs_h <= 0x7bffU);
++}
++
++static __attribute__((target("f16c,fma,avx2"))) F16FmaFastResult
++f16_muladd_x86_f16c_try(float16 a, float16 b, float16 c,
++                        int scale, int flags, float_status *status)
++{
++    if (unlikely(scale != 0 || flags != 0 ||
++                 status->float_rounding_mode != float_round_nearest_even ||
++                 status->rebias_overflow || status->rebias_underflow ||
++                 !f16_bits_normal_or_zero(a) ||
++                 !f16_bits_normal_or_zero(b) ||
++                 !f16_bits_normal_or_zero(c))) {
++        return (F16FmaFastResult){ 0, false };
++    }
++
++    __m128i vh = _mm_setr_epi16((int16_t)a, (int16_t)b, (int16_t)c,
++                                0, 0, 0, 0, 0);
++    __m128 vf = _mm_cvtph_ps(vh);
++    __m256d vd = _mm256_cvtps_pd(vf);
++    double da = _mm256_cvtsd_f64(vd);
++    double db = _mm256_cvtsd_f64(_mm256_permute4x64_pd(vd, 0x55));
++    double dc = _mm256_cvtsd_f64(_mm256_permute4x64_pd(vd, 0xaa));
++    double dr = __builtin_fma(da, db, dc);
++
++    uint64_t bits;
++    memcpy(&bits, &dr, sizeof(bits));
++    uint32_t bexp = (uint32_t)((bits >> 52) & 0x7ffU);
++    if (unlikely(bexp < 1009U || bexp > 1037U)) {
++        return (F16FmaFastResult){ 0, false };
++    }
++
++    uint64_t low42 = bits & ((1ULL << 42) - 1);
++    if (unlikely(low42 == (1ULL << 41))) {
++        return (F16FmaFastResult){ 0, false };
++    }
++    if (low42 == 0) {
++        if (!(status->float_exception_flags & float_flag_inexact) &&
++            da != 0.0 && db != 0.0 && dc != 0.0) {
++            return (F16FmaFastResult){ 0, false };
++        }
++    } else {
++        status->float_exception_flags |= float_flag_inexact;
++    }
++
++    uint16_t sign = (uint16_t)((bits >> 48) & 0x8000U);
++    uint16_t exp16 = (uint16_t)((bexp - 1023U + 15U) << 10);
++    uint16_t mant16 = (uint16_t)((bits >> 42) & 0x3ffU);
++    uint16_t round_up = (low42 > (1ULL << 41)) ? 1U : 0U;
++    float16 out = (float16)(sign | (uint16_t)((exp16 | mant16) + round_up));
++    return (F16FmaFastResult){ out, true };
++}
++#endif
++
+ float16 float16_muladd_scalbn(float16 a, float16 b, float16 c,
+                               int scale, int flags, float_status *status)
+ {
++#ifdef QEMU_SOFTFLOAT_HAVE_X86_F16C_FMA
++    if (likely(use_x86_f16c_fma)) {
++        F16FmaFastResult fast = f16_muladd_x86_f16c_try(a, b, c, scale, flags,
++                                                        status);
++        if (likely(fast.hit)) {
++            return fast.val;
++        }
++    }
++#endif
+     FloatParts64 pa = float16_unpack_canonical(a, status);
+     FloatParts64 pb = float16_unpack_canonical(b, status);
+     FloatParts64 pc = float16_unpack_canonical(c, status);
+@@ -5161,4 +5238,35 @@ static void __attribute__((constructor)) softfloat_init(void)
+     if (ur.s != 0x0020000000000001ULL) {
+         force_soft_fma = true;
+     }
++#ifdef QEMU_SOFTFLOAT_HAVE_X86_F16C_FMA
++    if (!force_soft_fma &&
++        __builtin_cpu_supports("f16c") &&
++        __builtin_cpu_supports("fma") &&
++        __builtin_cpu_supports("avx2")) {
++        uint64_t seed = UINT64_C(0x517cc1b727220a95);
++        for (int i = 0; i < 2048; i++) {
++            seed += UINT64_C(0x9e3779b97f4a7c15);
++            uint64_t r = (seed ^ (seed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
++            r = (r ^ (r >> 27)) * UINT64_C(0x94d049bb133111eb);
++            r ^= r >> 31;
++            float16 ha = (float16)(r & 0xffffU);
++            float16 hb = (float16)((r >> 16) & 0xffffU);
++            float16 hc = (float16)((r >> 32) & 0xffffU);
++            float_status s_ref = { .float_rounding_mode = float_round_nearest_even,
++                                   .float_3nan_prop_rule = float_3nan_prop_s_cab,
++                                   .float_infzeronan_rule = float_infzeronan_dnan_always,
++                                   .default_nan_pattern = 0x40,
++                                   .float_exception_flags = (i & 1) ? float_flag_inexact : 0 };
++            float_status s_cand = s_ref;
++            float16 ref = float16_muladd_scalbn(ha, hb, hc, 0, 0, &s_ref);
++            F16FmaFastResult fast = f16_muladd_x86_f16c_try(ha, hb, hc, 0, 0, &s_cand);
++            if (fast.hit) {
++                g_assert_cmphex(fast.val, ==, ref);
++                g_assert_cmphex(s_cand.float_exception_flags, ==,
++                                s_ref.float_exception_flags);
++            }
++        }
++        use_x86_f16c_fma = true;
++    }
++#endif
+ }
+diff --git a/target/arm/tcg/vec_helper.c b/target/arm/tcg/vec_helper.c
+index 3c06e93..2dc0b4d 100644
+--- a/target/arm/tcg/vec_helper.c
++++ b/target/arm/tcg/vec_helper.c
+@@ -26,6 +26,10 @@
+ #include "qemu/int128.h"
+ #include "crypto/clmul.h"
+ #include "vec_internal.h"
++#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(__FAST_MATH__)
++#include <immintrin.h>
++#define ARM_VEC_HAVE_X86_F16C_FMA 1
++#endif
+ 
+ /*
+  * Data for expanding active predicate bits to bytes, for byte elements.
+@@ -1730,6 +1734,139 @@ DO_FMUL_IDX(gvec_fmla_nf_idx_s, float32_add, float32_mul, float32, H4)
+ DO_FMUL_IDX(gvec_fmls_nf_idx_h, float16_sub, float16_mul, float16, H2)
+ DO_FMUL_IDX(gvec_fmls_nf_idx_s, float32_sub, float32_mul, float32, H4)
+ 
++#ifdef ARM_VEC_HAVE_X86_F16C_FMA
++static inline bool arm_f16_normal_or_zero(uint16_t h)
++{
++    uint16_t abs_h = h & 0x7fffU;
++    return abs_h == 0 || (abs_h >= 0x0400U && abs_h <= 0x7bffU);
++}
++
++static bool arm_vec_use_x86_f16c_fma(void)
++{
++    static int cached = -1;
++    int v = qatomic_read(&cached);
++    if (unlikely(v < 0)) {
++        v = (__builtin_cpu_supports("f16c") &&
++             __builtin_cpu_supports("fma") &&
++             __builtin_cpu_supports("avx2")) ? 1 : 0;
++        qatomic_set(&cached, v);
++    }
++    return v == 1;
++}
++
++static __attribute__((target("f16c,fma,avx2"))) void
++arm_gvec_fmla_idx_h_x86(void *vd, void *vn, void *vm, void *va,
++                        uint16_t negx, float_status *stat, uint32_t desc)
++{
++    intptr_t oprsz = simd_oprsz(desc);
++    intptr_t segment = MIN(16, oprsz) / sizeof(float16);
++    intptr_t idx = simd_data(desc);
++    float16 *d = vd, *n = vn, *m = vm, *a = va;
++
++    if (unlikely((segment != 4 && segment != 8) ||
++                 stat->float_rounding_mode != float_round_nearest_even ||
++                 stat->rebias_overflow || stat->rebias_underflow)) {
++        for (intptr_t i = 0; i < oprsz / (intptr_t)sizeof(float16);
++             i += segment) {
++            float16 mm = m[H2(i + idx)];
++            for (intptr_t j = 0; j < segment; j++) {
++                d[i + j] = float16_muladd(n[i + j] ^ negx, mm,
++                                          a[i + j], 0, stat);
++            }
++        }
++        clear_tail(d, oprsz, simd_maxsz(desc));
++        return;
++    }
++
++    __m128i vneg = _mm_set1_epi16((int16_t)negx);
++    __m128i vabs_mask = _mm_set1_epi16(0x7fff);
++    __m128i vmin_norm = _mm_set1_epi16(0x0400);
++    __m128i vmax_norm = _mm_set1_epi16(0x7bff);
++    __m128i vzero = _mm_setzero_si128();
++
++    for (intptr_t i = 0; i < oprsz / (intptr_t)sizeof(float16); i += segment) {
++        float16 mm = m[H2(i + idx)];
++        if (unlikely(!arm_f16_normal_or_zero(mm))) {
++            for (intptr_t j = 0; j < segment; j++) {
++                d[i + j] = float16_muladd(n[i + j] ^ negx, mm,
++                                          a[i + j], 0, stat);
++            }
++            continue;
++        }
++
++        __m128i vmm_h = _mm_cvtsi32_si128((int)(uint16_t)mm);
++        double dmm = (double)_mm_cvtss_f32(_mm_cvtph_ps(vmm_h));
++        __m256d vmm = _mm256_set1_pd(dmm);
++
++        for (intptr_t base = i; base < i + segment; base += 4) {
++            uint64_t n4_raw, a4_raw;
++            memcpy(&n4_raw, n + base, sizeof(n4_raw));
++            memcpy(&a4_raw, a + base, sizeof(a4_raw));
++            __m128i vn4 = _mm_xor_si128(_mm_cvtsi64_si128((int64_t)n4_raw),
++                                        vneg);
++            __m128i va4 = _mm_cvtsi64_si128((int64_t)a4_raw);
++            __m128i v8 = _mm_unpacklo_epi64(vn4, va4);
++
++            __m128i abs8 = _mm_and_si128(v8, vabs_mask);
++            __m128i is_sub = _mm_andnot_si128(_mm_cmpeq_epi16(abs8, vzero),
++                                              _mm_cmpgt_epi16(vmin_norm, abs8));
++            __m128i is_naninf = _mm_cmpgt_epi16(abs8, vmax_norm);
++            __m128i bad_in = _mm_or_si128(is_sub, is_naninf);
++
++            uint16_t n_arr[4], a_arr[4], out_arr[4];
++            memcpy(n_arr, &n4_raw, 8);
++            memcpy(a_arr, &a4_raw, 8);
++
++            if (unlikely(!_mm_testz_si128(bad_in, bad_in))) {
++                for (int k = 0; k < 4; k++) {
++                    out_arr[k] = float16_muladd(n_arr[k] ^ negx, mm,
++                                                a_arr[k], 0, stat);
++                }
++                memcpy(d + base, out_arr, 8);
++                continue;
++            }
++
++            __m256 vf8 = _mm256_cvtph_ps(v8);
++            __m256d vnd = _mm256_cvtps_pd(_mm256_castps256_ps128(vf8));
++            __m256d vad = _mm256_cvtps_pd(_mm256_extractf128_ps(vf8, 1));
++            __m256d vrd = _mm256_fmadd_pd(vnd, vmm, vad);
++
++            uint64_t rbits[4];
++            _mm256_storeu_si256((__m256i *)rbits, _mm256_castpd_si256(vrd));
++
++            for (int k = 0; k < 4; k++) {
++                uint64_t bits = rbits[k];
++                uint32_t bexp = (uint32_t)((bits >> 52) & 0x7ffU);
++                uint64_t low42 = bits & ((1ULL << 42) - 1);
++                if (unlikely(bexp < 1009U || bexp > 1037U ||
++                             low42 == (1ULL << 41) ||
++                             (low42 == 0 &&
++                              !(stat->float_exception_flags &
++                                float_flag_inexact) &&
++                              (n_arr[k] & 0x7fffU) != 0 &&
++                              (mm & 0x7fffU) != 0 &&
++                              (a_arr[k] & 0x7fffU) != 0))) {
++                    out_arr[k] = float16_muladd(n_arr[k] ^ negx, mm,
++                                                a_arr[k], 0, stat);
++                } else {
++                    if (low42 != 0) {
++                        stat->float_exception_flags |= float_flag_inexact;
++                    }
++                    uint16_t sign = (uint16_t)((bits >> 48) & 0x8000U);
++                    uint16_t exp16 = (uint16_t)((bexp - 1023U + 15U) << 10);
++                    uint16_t mant16 = (uint16_t)((bits >> 42) & 0x3ffU);
++                    uint16_t round_up = (low42 > (1ULL << 41)) ? 1U : 0U;
++                    out_arr[k] = (uint16_t)(sign |
++                                 (uint16_t)((exp16 | mant16) + round_up));
++                }
++            }
++            memcpy(d + base, out_arr, 8);
++        }
++    }
++    clear_tail(d, oprsz, simd_maxsz(desc));
++}
++#endif
++
+ #define DO_FMLA_IDX(NAME, TYPE, H, NEGX, NEGF)                             \
+ void HELPER(NAME)(void *vd, void *vn, void *vm, void *va,                  \
+                   float_status *stat, uint32_t desc)                       \
+@@ -1748,12 +1885,55 @@ void HELPER(NAME)(void *vd, void *vn, void *vm, void *va,                  \
+     clear_tail(d, oprsz, simd_maxsz(desc));                                \
+ }
+ 
++#ifdef ARM_VEC_HAVE_X86_F16C_FMA
++void HELPER(gvec_fmla_idx_h)(void *vd, void *vn, void *vm, void *va,
++                             float_status *stat, uint32_t desc)
++{
++    if (likely(arm_vec_use_x86_f16c_fma())) {
++        arm_gvec_fmla_idx_h_x86(vd, vn, vm, va, 0, stat, desc);
++        return;
++    }
++    intptr_t i, j, oprsz = simd_oprsz(desc);
++    intptr_t segment = MIN(16, oprsz) / sizeof(float16);
++    intptr_t idx = simd_data(desc);
++    float16 *d = vd, *n = vn, *m = vm, *a = va;
++    for (i = 0; i < oprsz / (intptr_t)sizeof(float16); i += segment) {
++        float16 mm = m[H2(i + idx)];
++        for (j = 0; j < segment; j++) {
++            d[i + j] = float16_muladd(n[i + j], mm, a[i + j], 0, stat);
++        }
++    }
++    clear_tail(d, oprsz, simd_maxsz(desc));
++}
++
++void HELPER(gvec_fmls_idx_h)(void *vd, void *vn, void *vm, void *va,
++                             float_status *stat, uint32_t desc)
++{
++    if (likely(arm_vec_use_x86_f16c_fma())) {
++        arm_gvec_fmla_idx_h_x86(vd, vn, vm, va, 0x8000U, stat, desc);
++        return;
++    }
++    intptr_t i, j, oprsz = simd_oprsz(desc);
++    intptr_t segment = MIN(16, oprsz) / sizeof(float16);
++    intptr_t idx = simd_data(desc);
++    float16 *d = vd, *n = vn, *m = vm, *a = va;
++    for (i = 0; i < oprsz / (intptr_t)sizeof(float16); i += segment) {
++        float16 mm = m[H2(i + idx)];
++        for (j = 0; j < segment; j++) {
++            d[i + j] = float16_muladd(n[i + j] ^ 0x8000U, mm,
++                                      a[i + j], 0, stat);
++        }
++    }
++    clear_tail(d, oprsz, simd_maxsz(desc));
++}
++#else
+ DO_FMLA_IDX(gvec_fmla_idx_h, float16, H2, 0, 0)
++DO_FMLA_IDX(gvec_fmls_idx_h, float16, H2, INT16_MIN, 0)
++#endif
+ DO_FMLA_IDX(gvec_fmla_idx_s, float32, H4, 0, 0)
+ DO_FMLA_IDX(gvec_fmla_idx_d, float64, H8, 0, 0)
+ DO_FMLA_IDX(gvec_bfmla_idx, bfloat16, H2, 0, 0)
+ 
+-DO_FMLA_IDX(gvec_fmls_idx_h, float16, H2, INT16_MIN, 0)
+ DO_FMLA_IDX(gvec_fmls_idx_s, float32, H4, INT32_MIN, 0)
+ DO_FMLA_IDX(gvec_fmls_idx_d, float64, H8, INT64_MIN, 0)
+ DO_FMLA_IDX(gvec_bfmls_idx, bfloat16, H2, INT16_MIN, 0)

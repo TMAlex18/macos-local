@@ -92,6 +92,7 @@
 | `pauth-baseline`、`pauth-model`、`pauth-model-impdef`、`pauth-guards` | E06 PAC 基线与默认关闭的 HVC 软件模型 |
 | `pauth-cost-bench` | E06 `PACIBSP`/`RETAB` 单次 TCG 模拟开销微基准 |
 | `sync-counter-tests` | E06 每 vCPU 的 TCG 全局锁与独占段触发源计数测试（`0033`） |
+| `fp16-fma-tests` | E06 对 `0050` FP16 乘加快路径的精确参照校验（只在宿主运行） |
 | `clock-math`、`clock-functional`、`clock-rate-exact`、`clock-check`、`clock-rate-baseline` | E06 24 MHz 时钟契约测试 |
 | `bdif-usb-tests`、`bdif-usb-backpressure`、`bdif-usb-control`、`bdif-block-tests` | E05 自写客体下的 BDIF USB 与块传输测试 |
 | `config-mailbox-tests`、`avp-rtc-tests`、`ctrr-contract-tests`、`ctrr-qemu-guest-tests`、`virtio-usb-tests` | E05 配置邮箱、AVP RTC、CTRR 与 VirtIO USB 自写客体契约 |

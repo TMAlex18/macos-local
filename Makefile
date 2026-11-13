@@ -184,7 +184,7 @@ ctrr-contract-tests:
 ctrr-qemu-guest-tests:
 	python3 experiments/E05-ctrr/run.py
 
-.PHONY: smp-mmu-tests smp-mmu-extended sync-counter-tests
+.PHONY: smp-mmu-tests smp-mmu-extended sync-counter-tests fp16-fma-tests
 # Self-authored guest only: no Apple firmware, TSS, USB/IP or system changes.
 smp-mmu-tests:
 	python3 experiments/E06-smp-mmu/run.py
@@ -194,6 +194,10 @@ smp-mmu-extended:
 
 sync-counter-tests:
 	python3 -B experiments/E06-sync-counters/run.py
+
+# Host only: 0050's float16 FMA fast paths against an exact reference; no QEMU.
+fp16-fma-tests:
+	python3 -B experiments/E06-fp16-fma/run.py
 
 # Current installed-OS orchestration checks. Run sequentially: fixtures can
 # share a loopback port. No QEMU, browser, GPU, guest or external network.
@@ -215,10 +219,13 @@ installed-offline-tests:
 	python3 -B experiments/E05-installed-boot/test-log-window.py
 	python3 -B experiments/E05-installed-boot/test-gpuwatch-offline.py
 	python3 -B experiments/E05-installed-boot/test-shared-cache-identity.py
+	python3 -B experiments/E05-installed-boot/test-validate-webgl-complex.py
+	python3 -B experiments/E05-installed-boot/test-app-suite.py
 	python3 -B experiments/E05-usbip-kernel/test-qmp-lifecycle.py
 	python3 -B experiments/E05-usbip-kernel/test-storage-retention.py
 	python3 -B experiments/E05-signed-restore/test-rsp-readonly.py
 	python3 -B tools/test-freeze-audio-voices.py
+	python3 -B tools/test-apfs-clean-unmount.py
 
 # Self-authored arm64 Mach-O only; no SDK or guest execution.
 build-shared-cache-identity:
@@ -228,6 +235,7 @@ build-shared-cache-identity:
 # offline aggregate. Not macOS, Metal, physical-GPU or performance evidence.
 webgl-fixture-host-check:
 	python3 -B experiments/E05-installed-boot/test-webgl-probe.py
+	python3 -B experiments/E05-installed-boot/test-webgl-complex.py
 
 .PHONY: el0-context-tests el0-context-extended
 # Self-authored guest only. Reuses existing binaries; no network or Apple code.

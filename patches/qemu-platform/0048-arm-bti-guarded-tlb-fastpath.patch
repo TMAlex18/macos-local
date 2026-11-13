@@ -1,0 +1,47 @@
+From: macos-local research
+Subject: [PATCH] Inline code-TLB fastpath for AArch64 BTI is_guarded_page checks
+
+Check the active inline SoftMMU code TLB directly via arm_env_mmu_index() in
+is_guarded_page() before falling back to probe_access_full(), eliminating
+indirect mmu_index virtual calls and out-of-line probe_access_internal() walks
+on arm64e indirect branches.
+
+diff --git a/target/arm/tcg/helper-a64.c b/target/arm/tcg/helper-a64.c
+index 047a257..5b0d7ca 100644
+--- a/target/arm/tcg/helper-a64.c
++++ b/target/arm/tcg/helper-a64.c
+@@ -37,6 +37,7 @@
+ #include "accel/tcg/helper-retaddr.h"
+ #include "accel/tcg/probe.h"
+ #include "exec/target_page.h"
++#include "exec/tlb-common.h"
+ #include "exec/tlb-flags.h"
+ #include "qemu/int128.h"
+ #include "qemu/atomic128.h"
+@@ -1761,14 +1762,24 @@ void HELPER(cpyfe)(CPUARMState *env, uint32_t syndrome, uint32_t wdesc,
+     do_cpye(env, syndrome, wdesc, rdesc, false, GETPC());
+ }
+ 
+-static bool is_guarded_page(CPUARMState *env, vaddr addr, uintptr_t ra)
++static inline bool is_guarded_page(CPUARMState *env, vaddr addr, uintptr_t ra)
+ {
+ #ifdef CONFIG_USER_ONLY
+     return page_get_flags(addr) & PAGE_BTI;
+ #else
++    CPUState *cs = env_cpu(env);
++    int mmu_idx = arm_env_mmu_index(env);
++    CPUTLBDescFast *fast = cpu_tlb_fast(cs, mmu_idx);
++    uintptr_t idx = (addr >> TARGET_PAGE_BITS) &
++                    (fast->mask >> CPU_TLB_ENTRY_BITS);
++
++    if (likely(qatomic_read(&fast->table[idx].addr_code) ==
++               (addr & TARGET_PAGE_MASK))) {
++        return cs->neg.tlb.d[mmu_idx].fulltlb[idx].extra.arm.guarded;
++    }
++
+     CPUTLBEntryFull *full;
+     void *host;
+-    int mmu_idx = cpu_mmu_index(env_cpu(env), true);
+     int flags = probe_access_full(env, addr, 0, MMU_INST_FETCH, mmu_idx,
+                                   false, &host, &full, ra);
+ 
