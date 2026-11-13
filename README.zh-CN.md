@@ -21,17 +21,18 @@
   - run-64 验证文件跨冷启动持久化保留，以及通过 Apple 菜单正常关机并使 QEMU 正常退出；
   - run-65 验证客体 `curl` HTTPS 访问、Safari 本地与远程网页浏览，以及 TextEdit 编辑保存。
 - **后续进展（Runs 70–128）：** NVIDIA 与 Intel 双 GPU 原生窗口像素呈现、自动 DHCP 与 HTTP 文件服务、VirtIO 声卡绑定为 CoreAudio 默认输出设备（部分轮次实现逐字节一致的 PCM 输出），以及固定 WebGL2 着色器两份原始像素读回与独立参考实现逐字节一致。
-- **最近有新功能结论的运行：** [Run149 与 Run150](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.md) 在 `0033–0045` 同步与执行吞吐优化构建上**完全关闭 30 秒超时诊断**（原版未修改 WebKit 看门狗行为）：
-  - **安静客体（Run149，`+976 s`）**：开机后第一次冷启动 Safari 以 **`2.734 秒`（0 次 GPU 看门狗退出——首次不依赖任何 UIProcess 主循环投递裕量即正面跌破 `3.000 秒` 硬期限）**完成初始化，两份 96×64 RGBA8 固定 WebGL2 读回（各 24,576 字节）逐字节一致，二次无干扰启动耗时 **`1.679 秒`**。
-  - **后台峰值负载窗口（Run150，不等待安静直接在 `+720 s`、`vcpu_mean_busy = 6.32` 触发）**：开机后第一次冷启动 Safari 同样以 **0 次 GPU 看门狗退出**一次完成初始化（日志跨度 `3.254 秒`，处于原版 UIProcess 运行循环投递裕量内），两份 WebGL2 读回逐字节一致（跨 5 轮独立无诊断冷启动 **5/5** 通过；Run148–150 连续 **8/8 次**无诊断新鲜启动全部 0 看门狗通过；`+1020 s` 二次启动 **`1.662 秒`**）。两轮均由客体内部正常关机，文件系统干净卸载尚未证明。
+- **最近有新结论的运行（Run151–156，`0046–0050` 构建）：**
+  - **Run151** 用 `0045` 构建在全新空白磁盘上重跑完整签名原生还原，用时 43.6 分钟（2,613.93 秒），比 run-53 快 2.57 倍。
+  - **Run155** 与 **Run156** 完全关闭 30 秒超时诊断，在启动后 `+720 s`（登录后的后台负载仍高）冷启动 Safari，首个 GPU 连接分别在 **2.941 秒**和 **2.163 秒**完成初始化，低于 WebKit 原版 3.000 秒看门狗期限，0 次看门狗退出；新鲜复启动最快 1.417 秒。
+  - **Run154** 连续运行 2.1 小时并解锁锁屏；**Run156** 通过多通道 WebGL2→Metal→Reims→Vulkan 读回（98,304 字节 0 误差）、内置应用与框架套件（计算器、TextEdit、系统信息、jsc、sips、sqlite3、plutil、gzip：7/7）和两轮逐位精确、没有零块的 `afplay` 采集，并用盘面结构和内核日志证明客体关机时主 APFS 容器干净卸载（[Run156 报告](docs/reports/M3-EXPANDED-VALIDATION-RUN156.md)）。
 - **近期工作（2026-11-10 起）：**
-  Runs 130–142 将 Safari GPU 初始化延迟定位到客体饱和与 14%–30% 的 QEMU 锁等待（[PAC 算法](docs/reports/M3-PAC-ALGORITHM-GPU-INIT-TIMING.md)、[客体内存](docs/reports/M3-RAM-SIZE-GPU-INIT-TIMING.md)、[宿主线程采样](docs/reports/M3-GPU-INIT-HOST-CPU-USE.md)、[安静客体](docs/reports/M3-QUIET-GUEST-GPU-INIT-TIMING.md)）。Runs 143–146（[同步触发源报告](docs/reports/M3-QEMU-SYNC-SOURCES.md)）用每核无锁计数（`0033`）查清触发源并合入六项补丁（`0034–0039`），使饱和期 `bql` 获取率下降 90%、vCPU 运行或可运行占比升至 **96.6%**（总阻塞仅 3.4%）。Runs 147–150（[执行吞吐报告](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.md)）用 `perf` 剖析剩余 80%–81% 的 C helper 热点并合入六项纯执行吞吐补丁（`0040–0045`：`CF_PCREL` 跳转缓存先读后写失效与 256 页桶、常规 16 KiB 子页精确失效与无 EL2 内联快路径、PAuth VA 缓存与 SSSE3 `pshufb` QARMA5、SME `do_fmopa_h` 预拆包、宿主 RAM 地址标记的跨进程持久 `CPUJumpCache`、`TTBR0_EL1` 切换保留 `Phys_NS` 与 `TTBR1` 内核高半区 TLB），将饱和期客体翻译块 `[JIT]` 占比提升 **78.4%**（`13.52% → 24.12%`），使安静客体无诊断首次冷启动严格破 `3.000 s`（`2.734 s`）且 `+720 s` 峰值期无诊断首次冷启动 0 看门狗通过（`3.254 s`）。下一步是在当前 `0045` 主线二进制上重跑一次原生还原（需 root）并拓展更多应用与 Metal 覆盖验证。
-  当前主线二进制为 `build/qemu-bdif-usb/qemu-system-aarch64`，SHA-256 `f858a94a8d7395456679a9c05c2c0dd2d6ee56f8701525e47bbf7ed9ee85f474`，补丁链记录至 `0045`；详见 构建记录 与 [当前状态](docs/STATUS.md)。
+  Runs 130–142 将 Safari GPU 初始化慢定位到客体 CPU 饱和与 14%–30% 的 QEMU 全局锁（`bql`）和全核暂停等待（[PAC 算法](docs/reports/M3-PAC-ALGORITHM-GPU-INIT-TIMING.md)、[客体内存](docs/reports/M3-RAM-SIZE-GPU-INIT-TIMING.md)、[宿主线程采样](docs/reports/M3-GPU-INIT-HOST-CPU-USE.md)、[安静客体](docs/reports/M3-QUIET-GUEST-GPU-INIT-TIMING.md)）。Runs 143–146（[同步触发源报告](docs/reports/M3-QEMU-SYNC-SOURCES.md)）用每核计数（`0033`）查清触发源并合入 `0034–0039`，饱和期全局锁获取减少 90%（总阻塞 3.4%）。Runs 147–156（[执行吞吐报告](docs/reports/M3-TCG-THROUGHPUT-AND-ORIG3S.md)）用 `perf` 剖析剩余 helper 热点并合入 `0040–0050`（跳转缓存、SoftMMU 刷新、PAuth 与 FP16 快路径），客体时间里翻译代码（`[JIT]`）的占比升到 25.7%，冷启动压到 3 秒以内。下一步：先保留 Run151 新装磁盘的副本，再用 `0050` 构建独立冷启动它；在 Intel 核显上复核；做更长、更广的负载测试。
+  当前主线二进制为 `build/qemu-bdif-usb/qemu-system-aarch64`，SHA-256 `e6f7b2cb32df3779531cf1b93612a67d8e1fa350c8b894c19d0c9e71a60f4a51`，补丁链记录至 `0050`；详见 构建记录 与 [当前状态](docs/STATUS.md)。
 - **主要未决问题**（证据与逐轮运行表见 [RESULTS 第 2 节](docs/RESULTS.md)）：
-  - *峰值负载期标称 `< 3.000 秒` 裕量：* 安静客体已在 Run149 无诊断下严格跌破 `3.000 秒`（`2.734 秒`），`+720 s` 后台峰值窗口也在 Run150 无诊断下 0 看门狗一次通过（`3.254 秒`，2 次 WebProcess 通知），但峰值期日志跨度仍依赖原版 UIProcess 运行循环约 `0.26 秒` 的投递裕量。
-  - *音频：* PCM 输出在部分轮次完整无损，在另一些轮次出现缺帧（零块替代），根因未定。
+  - *3 秒期限的余量：* 最近两次冷启动（Run155–156）都通过；更早的构建仍出现过看门狗终止（Run147 的 `0039`、Run152 首轮的 `0048`），还需要更多冷启动才能说稳定。
+  - *音频：* 更早的运行在部分轮次缺帧；Run156 在 `0050` 上的两轮采集逐位精确、没有零块，但长时音频和更早缺帧的原因都还没测。
   - *宿主侧：* 运行期间曾出现过 Vulkan `DeviceLost`、一次宿主 i915 GPU 挂起以及两次意外宿主重启。
-- **尚未验证：** 文件系统干净关机证明、更广泛的应用与 Metal 覆盖、物理输入/呈现延迟以及 M5–M7 性能指标。
+- **尚未验证：** 大型第三方应用与更广的 Metal 覆盖、数天级稳定性、物理输入/呈现延迟、睡眠唤醒与输入法，以及 M5–M7 性能指标。
 - **平台与图形自写验证：** 自写 ARM64 裸机固件验证了定时器/GIC、16 KiB MMU、多核同步、EL0 完整上下文与迁移、24 MHz 精确时钟及 PAC HVC 软件模型；自写客体在 NVIDIA 与 Intel GPU 上驱动了 Reims 计算、绘制、呈现与窗口输入链路。
 - **Apple 组件静态分析：** IM4M 签名链、密封 SystemOS 解析以及 Virtualization AUX/UID 密钥格式（从未执行 Apple 代码）。
 - **相关工作调研：** steelbrain 的实验仓库（2026-08，无头 macOS 13）与 orchard（2026-09，macOS 13 桌面）在本项目之前已在 x86 Linux 的 TCG 上运行了 arm64 macOS；GoldenGate-VM 于 2026-10-31 展示了 WSL2 下的 macOS 27 桌面。orchard 与 GoldenGate-VM 均修补了 AVPBooter 并使用预制 Tart 镜像，目前尚无公开项目报告在纯 Linux 下完成原版原生还原。详见 [相关项目调研](docs/reports/RELATED-PROJECTS-SURVEY-20261108.md)（2026-11-08；未复现外部项目声明）。

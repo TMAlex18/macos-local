@@ -5,9 +5,18 @@ This entry starts a fresh VM from the two retained targets of a
 client exit and verified `Status: Restore Finished` log evidence, followed by
 normal QMP teardown, reaping and matching retained ROOT/AUX inode metadata.
 
-## Current Run128 profile
+## Current reference and the Run128 diagnostic profile
 
-The current completed reference is
+The latest completed reference is
+m3-expanded-system-validation-20261113-156:
+QEMU SHA-256
+`e6f7b2cb32df3779531cf1b93612a67d8e1fa350c8b894c19d0c9e71a60f4a51`
+(patch chain through 0050) with the 30-second diagnostic **off**, so Safari's
+first GPU initialization ran under the ordinary 3-second deadlines; see the
+[Run156 report](../../docs/reports/M3-EXPANDED-VALIDATION-RUN156.en.md).
+Runs 146–156 used the flags below without `--webkit-timeout-diagnostic`.
+
+The diagnostic reference, kept for comparison runs, is
 [`m3-webgl2-readback-netctrl512-20261108-128`](../../runs/e05-installed-boot/m3-webgl2-readback-netctrl512-20261108-128/results.json).
 It used QEMU SHA-256
 `4a433616dc04e90ba41d720fe0dfb8925294799eff94a6eef24b52108a6b4d66`
@@ -17,8 +26,8 @@ passes both fixed readbacks. Its timeout/application analysis
 observes site0 but not site1, and keeps `original_deadline_performance_pass=false`.
 These are bounded results for one fixture, not general WebGL/Metal or performance certification.
 
-Run128 is closed. The following recipe is a future run template after maintenance,
-with a new label and new upload tags; it does not rerun or overwrite Run128.
+Run128 is closed. The following recipe is its diagnostic template, for a new
+run with a new label and new upload tags; it does not rerun or overwrite Run128.
 All host commands below are issued from the repository root.
 
 Before launching:
