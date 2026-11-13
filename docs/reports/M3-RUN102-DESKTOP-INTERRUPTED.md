@@ -52,7 +52,7 @@ user service `macos-local-run103.service` with a 3600-second observation
 window. This changed controller lifetime, not the guest platform, RAM or GPU
 profile. Current work is tracked in [STATUS](../STATUS.md).
 
-Evidence: [`results.json`](../../runs/e05-installed-boot/m3-gpu-window-sample-20261106-102/results.json),
-[`retained-storage.json`](../../runs/e05-installed-boot/m3-gpu-window-sample-20261106-102/retained-storage.json),
+Evidence: `results.json`,
+`retained-storage.json`,
 `ui-actions.jsonl`, `kernel-boot.log`, `qemu-stderr.log`, `guest-files.log`,
 and the named native captures in the same run directory.

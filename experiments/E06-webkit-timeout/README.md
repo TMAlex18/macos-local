@@ -54,7 +54,7 @@ The 0031 main build
 `b4d85fe0d7e4e10d7b1c99f95ecfd54d8079a3ecb8665245c47db8e514a2774a`
 passed all five cases (matching has 19 phases), with every QEMU exiting 0 and
 reaped. Evidence is
-[`runtime-slide-final/results.json`](../../runs/e06-webkit-timeout-20261108/runtime-slide-final/results.json).
+`runtime-slide-final/results.json`.
 All 40 changed QEMU source files reconstructed exactly from the pinned patch
 chain. These tests do not validate macOS's 16 KiB mappings or Safari attribution;
 those require the next actual installed-OS consumer. Run125 used the earlier

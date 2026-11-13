@@ -847,7 +847,7 @@ the shared runner environment and is not evidence of GPU execution. No device
 source edits or extra rebuilds were required for this IRQ probe.
 
 Pinned board-level interrupt routing follows
-[VMApple `create_pcie`](../../sources/qemu-reims-arm/hw/vmapple/vmapple.c),
+VMApple `create_pcie`,
 GPEX swizzle, and
 xHCI PCI interrupt wiring:
 xHCI advertises INTA (PCI pin 1, internal pin 0), yielding GPEX index

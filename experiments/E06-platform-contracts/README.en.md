@@ -199,7 +199,7 @@ Main binary
 checks above with every QEMU process and handshake thread cleanly exited and
 reaped, and all 42 patched source files reconstructed identically from the
 pinned patch chain. Results are stored in
-[`runs/e06-net-control-20261108/final/results.json`](../../runs/e06-net-control-20261108/final/results.json).
+`runs/e06-net-control-20261108/final/results.json`.
 Run 126 did exhibit control-ring address overlap alongside an inactive guest
 interface, but the guest's internal `used` VA has not yet been translated; this
 test treats neither that root-cause hypothesis nor any macOS fix from size 512

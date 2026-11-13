@@ -38,7 +38,7 @@ Binary SHA-256 values are retained with source hashes and each trial in
 `application-observation.json`: version 1 `5fb098b1…fb96584`, version 2
 `db739949…5d5472`. The exact v1 source, wrapper and build inputs are retained
 under `probe-source-v1/`; the v2 build metadata is in
-[`build.json`](../../build/macos-audio-query/build.json). Each recorded build
+`build.json`. Each recorded build
 verified 13 ad-hoc CodeDirectory page hashes. The six-case wrapper validation
 is a reused Linux orchestration baseline with probe/sample/codesign/HTTP
 substitutes; guest loader and query claims come from this run's real archives.
@@ -69,10 +69,10 @@ capture was unavailable after natural guest exit, with `errors=[]`.
 Full filesystem cleanliness remains unproven.
 
 Authoritative trial events, hashes and scopes are in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-isolated-opus-query-20261106-104/application-observation.json).
+`application-observation.json`.
 Lifecycle evidence is in
-[`results.json`](../../runs/e05-installed-boot/m3-isolated-opus-query-20261106-104/results.json)
+`results.json`
 and `qmp-lifecycle.json`. The same directory's `guest-uploads/` retains
 `r104load.tgz`, `r104query.tgz`, `r104sample.tgz`, `r104codecs.tgz`,
 `r104fresh.tgz` and `r104-virtio.txt`; the saved v1 build is
-[`probe-source-v1/build.json`](../../runs/e05-installed-boot/m3-isolated-opus-query-20261106-104/probe-source-v1/build.json).
+`probe-source-v1/build.json`.

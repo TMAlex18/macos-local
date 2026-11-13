@@ -87,8 +87,8 @@ Filesystem cleanliness remains unproven. No VM remains active; the latest
 completed run and last verified guest-origin shutdown are both Run109.
 
 Authoritative details are in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-output-only-audio-spindump-20261106-109/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-output-only-audio-spindump-20261106-109/results.json),
+`application-observation.json`,
+`results.json`,
 `audio-output-only-qmp.json`, `audio-control-current-bytes.json`, and
 `guest-uploads/r109audio.tgz`, `r109caps.tgz`, `r109spin.tgz`,
 `r109spin2.tgz`, `r109early.tgz` in the same directory. Report hashes,

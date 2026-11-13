@@ -10,7 +10,7 @@ Before any fresh Safari trial or guest upload, Reims reported FIFO waits and
 then Vulkan `DeviceLost`. QEMU terminated with exit `-6`; the controller kept
 `BrokenPipeError: [Errno 32] Broken pipe`, and no guest-origin shutdown was
 observed. The host Intel Vulkan runtime was independently rechecked afterward
-in [`host-intel-e02-recheck-20261105.json`](../../runs/host-intel-e02-recheck-20261105.json):
+in `host-intel-e02-recheck-20261105.json`:
 the existing E02 64×64 Intel and NVIDIA render/readback tests both passed with
 zero pixel mismatches. Therefore this run is a guest/Reims runtime failure
 sample, not evidence that 4 GiB causes the Safari watchdog.

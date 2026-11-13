@@ -99,9 +99,9 @@ Filesystem cleanliness remains unproven. The latest completed run and last
 verified guest-origin shutdown are both Run108.
 
 Authoritative evidence:
-[`application-observation.json`](../../runs/e05-installed-boot/m3-virtio-pcm-capture-20261106-108/application-observation.json),
-[`sampled validation`](../../runs/e05-installed-boot/m3-virtio-pcm-capture-20261106-108/pcm-sampled-validation.json),
-[`plain validation`](../../runs/e05-installed-boot/m3-virtio-pcm-capture-20261106-108/pcm-plain-validation.json),
+`application-observation.json`,
+`sampled validation`,
+`plain validation`,
 the corresponding `pcm-evidence*/manifest.json`,
 `pcm-preplay-negative-control.json`, `pcm-inputs/startup-output.json`,
 and `guest-uploads/r108pcm.tgz`, `r108pcms.tgz`, `r108pcmplain.tgz` in the

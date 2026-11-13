@@ -542,7 +542,7 @@ guest-origin shutdown was Run109. Lifecycle evidence is in `results.json`, `qmp-
 `shutdown-request.json` and `ui-actions.jsonl`. Current execution and build
 state remain in [STATUS](../STATUS.md).
 
-Evidence: [`application-observation.json`](../../runs/e05-installed-boot/m3-nvidia-gpu-system-stackshot-20261107-112/application-observation.json),
+Evidence: `application-observation.json`,
 `guest-uploads/r112gpuraw3.tgz`, `r112gpudecode.tgz`, all earlier named trial
 archives/preparation receipts, and
-[`host-desktop-profile.json`](../../runs/e05-installed-boot/m3-nvidia-gpu-system-stackshot-20261107-112/host-desktop-profile.json).
+`host-desktop-profile.json`.

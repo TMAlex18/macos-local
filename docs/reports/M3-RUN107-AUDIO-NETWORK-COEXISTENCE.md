@@ -67,9 +67,9 @@ and checked, including zero crossings. It is only reference input at this
 boundary, not a playback result. These completed checks are reused, not
 rerun for this report. Current execution is tracked in [STATUS](../STATUS.md).
 
-Evidence: [`application-observation.json`](../../runs/e05-installed-boot/m3-virtio-sound-repeat-20261106-107/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-virtio-sound-repeat-20261106-107/results.json),
+Evidence: `application-observation.json`,
+`results.json`,
 the named snapshots/captures and `guest-uploads/r107fresh.tgz`,
 `r107audio.tgz`, `r107net.txt` in the same directory. Separate preparation
-records are [`WAV device results`](../../runs/e05-virtio-sound/sound-wav-opt-in-20261106/results.json)
-and [`tone metadata`](../../build/audio-test-tone/metadata.json).
+records are `WAV device results`
+and `tone metadata`.

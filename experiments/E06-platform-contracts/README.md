@@ -163,6 +163,6 @@ RX_ALLMULTI/非法class ACK，数据队列仍为256。它验证QEMU队列重建�
 主binary `4a433616dc04e90ba41d720fe0dfb8925294799eff94a6eef24b52108a6b4d66`
 已通过上述全部检查，所有QEMU和握手线程均退出并回收；42个受改源文件从
 固定patch链重建一致。结果位于
-[`runs/e06-net-control-20261108/final/results.json`](../../runs/e06-net-control-20261108/final/results.json)。
+`runs/e06-net-control-20261108/final/results.json`。
 Run126确有控制ring地址重叠和guest接口inactive，但尚未翻译guest内部usedVA；
 本测试不把该原因或512对macOS的修复效果视为已证明，实际OS验证另行进行。

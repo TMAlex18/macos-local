@@ -30,6 +30,6 @@ that its owners are gone and the exact retained inodes are unlocked. Recovery
 must preserve the unknown exit/reap boundary rather than label it clean.
 
 Evidence is retained in
-[`results.json`](../../runs/e05-installed-boot/m3-gpu-window-sample-20261106-101/results.json),
+`results.json`,
 `ui-actions.jsonl`, `kernel-boot.log`, `qemu-stderr.log`, `guest-files.log`,
 and the native capture in the same run directory.

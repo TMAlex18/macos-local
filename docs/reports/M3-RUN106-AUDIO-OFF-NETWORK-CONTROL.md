@@ -62,8 +62,8 @@ before exit. This run does not establish that restored windows were disabled.
 Current controls and follow-up work are tracked in [STATUS](../STATUS.md).
 
 Evidence is in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-sound-off-network-control-20261106-106/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-sound-off-network-control-20261106-106/results.json),
+`application-observation.json`,
+`results.json`,
 `guest-uploads/r106net.txt`, `guest-uploads/r106audio.tgz`,
 `net-initial.json`, `net-identity-diagnostic.json`, `net-initial-fixed.json`,
 the named native captures, and `qmp-lifecycle.json` in the same directory.

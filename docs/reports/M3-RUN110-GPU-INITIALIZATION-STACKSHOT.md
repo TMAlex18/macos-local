@@ -93,11 +93,11 @@ guest shutdown or filesystem-clean evidence. The raw collector bytes were
 not edited. The latest finalized run and last verified guest-origin shutdown
 remain Run109; Run110 is the latest interrupted diagnostic result.
 
-Evidence: [`application-observation.json`](../../runs/e05-installed-boot/m3-restored-audio-gpu-stackshot-20261107-110/application-observation.json),
+Evidence: `application-observation.json`,
 `guest-uploads/r110stack2.tgz` (report lines 77–139 and 576–590; WebKit stream
 lines 669/1026), `r110canary.tgz`,
-[`RGB validation`](../../runs/e05-installed-boot/m3-restored-audio-gpu-stackshot-20261107-110/r110-stack2-rgb-validation.json),
-[`PCM analysis`](../../runs/e05-installed-boot/m3-restored-audio-gpu-stackshot-20261107-110/pcm-content-analysis.json),
-[`host-reboot evidence`](../../runs/e05-installed-boot/m3-restored-audio-gpu-stackshot-20261107-110/host-reboot-evidence.json)
-and [`retained-storage.json`](../../runs/e05-installed-boot/m3-restored-audio-gpu-stackshot-20261107-110/retained-storage.json).
+`RGB validation`,
+`PCM analysis`,
+`host-reboot evidence`
+and `retained-storage.json`.
 Current execution is tracked in [STATUS](../STATUS.md).

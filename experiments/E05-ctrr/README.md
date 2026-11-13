@@ -66,4 +66,4 @@ lock、read-only及控制状态转换。模型默认16 KiB粒度；QEMU设备的
 两次短fixture的输入二进制摘要相同。完整样本退出0，CPU fault、DMA错误和
 共享RAM/生命周期检查全部通过；它只验证自制guest设备合同，原始正常恢复路径
 仍由主线单独验证。汇总、构建元数据和原始日志位于
-[`runs/m2-ctrr-ram-cache-20261030/`](../../runs/m2-ctrr-ram-cache-20261030/)。
+`runs/m2-ctrr-ram-cache-20261030/`。

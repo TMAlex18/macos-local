@@ -93,4 +93,4 @@ Both short fixtures shared the same input binary digest. The full sample exited
 validates only the self-authored guest device contract, while the stock restore
 path continues to be validated separately on the main line. Summaries, build
 metadata, and raw logs reside in
-[`runs/m2-ctrr-ram-cache-20261030/`](../../runs/m2-ctrr-ram-cache-20261030/).
+`runs/m2-ctrr-ram-cache-20261030/`.

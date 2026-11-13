@@ -17,7 +17,7 @@ first GPU initialization ran under the ordinary 3-second deadlines; see the
 Runs 146–156 used the flags below without `--webkit-timeout-diagnostic`.
 
 The diagnostic reference, kept for comparison runs, is
-[`m3-webgl2-readback-netctrl512-20261108-128`](../../runs/e05-installed-boot/m3-webgl2-readback-netctrl512-20261108-128/results.json).
+`m3-webgl2-readback-netctrl512-20261108-128`.
 It used QEMU SHA-256
 `4a433616dc04e90ba41d720fe0dfb8925294799eff94a6eef24b52108a6b4d66`
 and the enabled **30-second diagnostic**, not the ordinary 3-second deadlines.
@@ -37,7 +37,7 @@ Before launching:
    `m2-native-install-observed-finish-qarma5-20261030-53` is the provenance used by
    Run128. Its ROOT/AUX aliases contain later writes; identical flags do not
    restore identical disk, login or cache history.
-2. Inspect [`runs/qemu-bdif-usb-build.json`](../../runs/qemu-bdif-usb-build.json).
+2. Inspect `runs/qemu-bdif-usb-build.json`.
    The selected binary and current patch hashes must agree. The current command
    needs memoization/statistics/capacity (`0022`/`0024`), PCM/control tracing (`0023`/`0027`),
    sound queue capacity (`0028`), and net control queue capacity (`0032`). The
@@ -47,7 +47,7 @@ Before launching:
    do not replace an executable owned by a live VM.
 3. For the diagnostic, build the self-authored metadata probe **before** the file
    service/VM starts, or reuse outputs matching
-   [`build/macos-shared-cache-identity/build.json`](../../build/macos-shared-cache-identity/build.json):
+   `build/macos-shared-cache-identity/build.json`:
 
    ```sh
    make build-shared-cache-identity
@@ -1205,7 +1205,7 @@ including `--user-network --guest-files` and the diagnostic flag. Before any
 arming, quit older Safari windows through the ordinary guest UI and confirm
 `pgrep -x Safari` exits 1 with no stdout or stderr. A successful quit request
 alone is not that confirmation. Run128 retained
-[`r128-safari-exited.txt`](../../runs/e05-installed-boot/m3-webgl2-readback-netctrl512-20261108-128/guest-uploads/r128-safari-exited.txt)
+`r128-safari-exited.txt`
 before its probe and publication. If Safari remains present or the query fails,
 stop this sequence rather than attributing subsequent global counters to a new
 first launch.

@@ -42,6 +42,6 @@ Earlier automatic dependency detection allowed a QEMU binary with only the
 cipher stub. A self-authored VMApple AES user-key probe then observed KEY
 acceptance followed by DATA failure and an unconsumed FLAG. The original
 failure and selected pre-rebuild configuration are retained in
-[`runs/e06-aes-user-key/20261023T191925.134225Z/results.json`](../../runs/e06-aes-user-key/20261023T191925.134225Z/results.json).
+`runs/e06-aes-user-key/20261023T191925.134225Z/results.json`.
 Enabling a backend is a build requirement; actual AES DMA/IRQ and signed Apple
 boot behavior are validated separately.

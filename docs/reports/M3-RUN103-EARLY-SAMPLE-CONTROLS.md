@@ -77,9 +77,9 @@ another test run and does not establish a hard guest deadline or Safari
 stability.
 
 Details and source locators are in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-gpu-window-sample-20261106-103/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-gpu-window-sample-20261106-103/results.json),
-[`qmp-lifecycle.json`](../../runs/e05-installed-boot/m3-gpu-window-sample-20261106-103/qmp-lifecycle.json),
+`application-observation.json`,
+`results.json`,
+`qmp-lifecycle.json`,
 and `guest-uploads/r103window.tgz`, `r103burst.tgz`, `r103stable.tgz`,
 `r103-shell.txt`, `r103-state.txt`, `r103-procinfo.txt` and
 `r103-current-procinfo.txt` in the same run directory.

@@ -80,8 +80,8 @@ rejected afterward because the VM was already gone. **Guest-origin shutdown
 and full filesystem cleanliness are not established by this run.**
 
 Raw results, hashes, exact served watcher versions and per-trial details are in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-watcher-http-20261106-100/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-watcher-http-20261106-100/results.json)
+`application-observation.json`,
+`results.json`
 and `guest-uploads/` in the same run directory. Run100 resolves the missing
 live watcher-archive boundary; Safari first-load stability and the cause of
 initialization latency remain open.

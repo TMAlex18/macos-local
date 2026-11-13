@@ -28,9 +28,9 @@ This finalized failure is the latest completed run; the last verified
 guest-origin shutdown remains Run109.
 
 Evidence is in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-gpu-system-stackshot-20261107-111/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-gpu-system-stackshot-20261107-111/results.json),
-[`host-gpu-error.json`](../../runs/e05-installed-boot/m3-gpu-system-stackshot-20261107-111/host-gpu-error.json),
+`application-observation.json`,
+`results.json`,
+`host-gpu-error.json`,
 `net-help.json`, `ui-actions.jsonl`, and the named captures in the same run
 directory. The subsequent NVIDIA control and current work are tracked in
 [STATUS](../STATUS.md); changing the GPU is not yet a verified fix.

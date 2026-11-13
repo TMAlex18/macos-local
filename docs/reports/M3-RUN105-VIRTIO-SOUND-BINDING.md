@@ -65,8 +65,8 @@ has `guest=false`, `reason=host-qmp-quit`. **Guest-origin shutdown and full
 filesystem cleanliness are not established by Run105.** Run105's most recent preceding verified guest-origin shutdown was Run104.
 
 Authoritative details are in
-[`application-observation.json`](../../runs/e05-installed-boot/m3-virtio-sound-20261106-105/application-observation.json),
-[`results.json`](../../runs/e05-installed-boot/m3-virtio-sound-20261106-105/results.json),
+`application-observation.json`,
+`results.json`,
 the named screenshots and QMP/descriptor JSON files in the same directory.
 The paused-device evidence is
-[`results.json`](../../runs/e05-virtio-sound/sound-opt-in-20261106/results.json).
+`results.json`.
